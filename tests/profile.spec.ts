@@ -9,7 +9,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { resolveDshHome } from '../src/home-paths.ts'
 import {
-  addProfileBundle, conflictingEntryIds, dropFromManifest, entryArtifactExists, hasDshManifest, hasLoadableEntry, holdsNativeAddon, isDshProfileName, normalizeReleaseAgeExcludes, pluginSubdirs, profileDir,
+  addProfileBundle, conflictingEntryIds, dropFromManifest, entryArtifactExists, hasDshManifest, hasLoadableEntry, holdsNativeAddon, isDshProfileName, mergeDuplicateReleaseAgeExcludes, pluginSubdirs, profileDir,
   readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledRepoEvidence, readInstalledRepoIdentities, readInstalledVersion, readLockCommits,
   removeProfileBundle,
 } from '../src/profile.ts'
@@ -1012,14 +1012,14 @@ describe('removeProfileBundle / addProfileBundle', () => {
   })
 })
 
-describe('normalizeReleaseAgeExcludes (#732, #733)', () => {
+describe('mergeDuplicateReleaseAgeExcludes (#732)', () => {
   function workspace(contents: string): string {
     const dir = writeProfile({ name: 'dsh-profile-web', dependencies: {} })
     writeFileSync(join(dir, 'pnpm-workspace.yaml'), contents)
     return dir
   }
 
-  it('rewrites a shadowed duplicate rule as one bare name (#732)', () => {
+  it('merges a shadowed duplicate rule into one union (#732)', () => {
     // pnpm appended the second rule when it let 1.65.4 through, then honoured
     // only the first per name — so its own entry was shadowed and every later
     // command in the profile failed lockfile verification.
@@ -1032,31 +1032,33 @@ describe('normalizeReleaseAgeExcludes (#732, #733)', () => {
       '  - dshmarket@1.65.4',
       '',
     ].join('\n'))
-    expect(normalizeReleaseAgeExcludes('web')).toEqual(['dshmarket'])
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['dshmarket'])
     expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe([
       'packages:',
       '  - .',
       'minimumReleaseAgeExclude:',
-      '  - dshmarket',
+      '  - dshmarket@1.38.1 || 1.47.0 || 1.65.1 || 1.65.4',
       '  - other@1.0.0',
       '',
     ].join('\n'))
   })
 
-  it('rewrites a version union even when it is the only rule for that name (#733)', () => {
-    // This is the shape pnpm 12.4.1 writes and then aborts on: a single 80 GiB
-    // allocation when it evaluates the union while resolving. pnpm's own
-    // validator calls the form invalid, so nothing is lost by not writing it.
-    const dir = workspace('minimumReleaseAgeExclude:\n  - billion-context@0.1.138 || 0.1.147\n  - keep@1.0.0\n')
-    expect(normalizeReleaseAgeExcludes('web')).toEqual(['billion-context'])
-    expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8'))
-      .toBe('minimumReleaseAgeExclude:\n  - billion-context\n  - keep@1.0.0\n')
+  it('leaves a version union alone, and does not widen it to a bare name (#733 review)', () => {
+    // #733 tied an 80 GiB abort to this spelling, but review on that issue and
+    // the reporter's own follow-up settled that `name@a || b` is a documented
+    // pnpm form and that the abort is pnpm's to fix. A bare name would exempt
+    // EVERY version of the package from the cooldown — wider than the file
+    // says — so a union that is the only rule for its name is not touched.
+    const original = 'minimumReleaseAgeExclude:\n  - billion-context@0.1.138 || 0.1.147\n  - keep@1.0.0\n'
+    const dir = workspace(original)
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual([])
+    expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(original)
   })
 
   it('leaves a file holding only bare names and single exact versions alone', () => {
     const original = 'minimumReleaseAgeExclude:\n  - a@1.0.0\n  - b\n  - c@2.0.0\n'
     const dir = workspace(original)
-    expect(normalizeReleaseAgeExcludes('web')).toEqual([])
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual([])
     expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(original)
   })
 
@@ -1064,7 +1066,7 @@ describe('normalizeReleaseAgeExcludes (#732, #733)', () => {
     // The same exact version twice is redundant, not a broken shape: one
     // line is what is left, and the entry still names that version only.
     const dir = workspace('minimumReleaseAgeExclude:\n  - @scope/pkg@1.0.0\n  - @scope/pkg@1.0.0\n')
-    expect(normalizeReleaseAgeExcludes('web')).toEqual(['@scope/pkg'])
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['@scope/pkg'])
     expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8'))
       .toBe("minimumReleaseAgeExclude:\n  - '@scope/pkg@1.0.0'\n")
   })
@@ -1078,14 +1080,14 @@ describe('normalizeReleaseAgeExcludes (#732, #733)', () => {
       'minimumReleaseAgeExclude:\n  - a@1.0.0\n  - a@\n',
     ]) {
       const dir = workspace(contents)
-      expect(normalizeReleaseAgeExcludes('web')).toEqual([])
+      expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual([])
       expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(contents)
     }
   })
 
   it('keeps a bare name meaning every version when it is one of the duplicates', () => {
     const dir = workspace('minimumReleaseAgeExclude:\n  - pkg\n  - pkg@1.0.0\n')
-    expect(normalizeReleaseAgeExcludes('web')).toEqual(['pkg'])
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['pkg'])
     expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe('minimumReleaseAgeExclude:\n  - pkg\n')
   })
 })

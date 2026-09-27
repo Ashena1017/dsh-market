@@ -532,7 +532,7 @@ describe('withHoistRecovery', () => {
     }
     await withHoistRecovery(run, 'web', ['add', 'thing'], dir, { releaseAgeBypass: false })
     expect(calls).toEqual([['add', 'thing'], ['store', 'path']])
-    expect(seen[0]).toBe('minimumReleaseAgeExclude:\n  - keep\n')
+    expect(seen[0]).toBe('minimumReleaseAgeExclude:\n  - keep@1.0.0 || 2.0.0\n')
   })
 
   it('leaves the policy alone when the caller declined the bypass and nothing was broken', async () => {
@@ -551,10 +551,11 @@ describe('withHoistRecovery', () => {
     expect(readFileSync(workspace, 'utf8')).toBe('minimumReleaseAgeExclude:\n  - keep@1.0.0\n')
   })
 
-  it('normalizes a broken entry before the command runs, not after a failure (#732, #733)', async () => {
-    // The union shape aborts pnpm 12.4.1 on a single 80 GiB allocation with NO
-    // error output, so a repair that waited for a failure to classify would
-    // never fire. The runner below reads the file as pnpm would.
+  it('merges a shadowed rule before the command runs, not after a failure (#732)', async () => {
+    // pnpm reads only the FIRST rule per name, so the duplicate makes every
+    // later command fail verification. Merging it first is what keeps this
+    // command from failing at all — the runner below reads the file as pnpm
+    // would, which is how the test proves the order.
     const dir = writeProfile({})
     const workspace = join(dir, 'pnpm-workspace.yaml')
     writeFileSync(workspace, 'minimumReleaseAgeExclude:\n  - billion-context@0.1.138 || 0.1.147\n  - dshmarket@1.38.1\n  - dshmarket@1.65.4\n')
@@ -565,7 +566,7 @@ describe('withHoistRecovery', () => {
     }
     const result = await withHoistRecovery(run, 'web', ['add', 'billion-context@0.1.147'], dir)
     expect(result.exitCode).toBe(0)
-    expect(seen[0]).toBe('minimumReleaseAgeExclude:\n  - billion-context\n  - dshmarket\n')
+    expect(seen[0]).toBe('minimumReleaseAgeExclude:\n  - billion-context@0.1.138 || 0.1.147\n  - dshmarket@1.38.1 || 1.65.4\n')
   })
 
   it('repairs a broken entry pnpm wrote during the run, and retries the same argv (#732)', async () => {
@@ -588,20 +589,20 @@ describe('withHoistRecovery', () => {
     const result = await withHoistRecovery(run, 'web', ['add', 'dshmarket@1.65.4'], dir, { marketFlags: false })
     expect(result.exitCode).toBe(0)
     expect(calls).toEqual([['add', 'dshmarket@1.65.4'], ['add', 'dshmarket@1.65.4']])
-    expect(readFileSync(workspace, 'utf8')).toBe('minimumReleaseAgeExclude:\n  - dshmarket\n')
+    expect(readFileSync(workspace, 'utf8')).toBe('minimumReleaseAgeExclude:\n  - dshmarket@1.38.1 || 1.65.1 || 1.65.4\n')
   })
 
-  it('normalizes before an `install` too, which resolves the same key (#733)', async () => {
+  it('merges before an `install` too, which reads the same key (#732)', async () => {
     const dir = writeProfile({})
     const workspace = join(dir, 'pnpm-workspace.yaml')
-    writeFileSync(workspace, 'minimumReleaseAgeExclude:\n  - billion-context@0.1.138 || 0.1.147\n')
+    writeFileSync(workspace, 'minimumReleaseAgeExclude:\n  - keep@1.0.0\n  - keep@2.0.0\n')
     const seen: string[] = []
     const run = async (_profile: string, _args: string[]): Promise<InstallResult> => {
       seen.push(readFileSync(workspace, 'utf8'))
       return ok
     }
     await withHoistRecovery(run, 'web', ['--no-frozen-lockfile', 'install'], dir)
-    expect(seen[0]).toBe('minimumReleaseAgeExclude:\n  - billion-context\n')
+    expect(seen[0]).toBe('minimumReleaseAgeExclude:\n  - keep@1.0.0 || 2.0.0\n')
   })
 })
 
