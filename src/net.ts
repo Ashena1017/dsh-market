@@ -9,25 +9,25 @@
  * took 9.9s direct on a reporter's machine, seconds from the 15s timeout,
  * while their proxy sat unused a millisecond away.
  *
- * `setGlobalDispatcher` from the `undici` PACKAGE cannot fix this, because
- * `globalThis.fetch` runs on Node's INTERNAL copy of undici — a different
- * instance. Verified: with a dispatcher installed, a global fetch still
- * produced no CONNECT at a local proxy, while undici's own fetch produced
- * `CONNECT awesome-dsh-plugin.com:443`.
+ * Every market request therefore calls undici's own fetch and carries a
+ * dispatcher this module created. Two measurements say why, and they are
+ * not the same fact:
  *
- * So the market calls undici's fetch with an explicit dispatcher. The scope
- * is deliberate: only requests made by this module change, and the host's
- * own networking is left exactly as the host configured it.
+ * - On Node 25, `setGlobalDispatcher` from the undici package does not
+ *   steer global fetch. With a dispatcher installed that way, a global
+ *   fetch produced no CONNECT at a local proxy, while undici's own fetch
+ *   produced `CONNECT awesome-dsh-plugin.com:443`.
+ * - On Node 22 the two stacks share one symbol (#742). Global fetch reads
+ *   `Symbol.for('undici.globalDispatcher.1')`. The host's first import of
+ *   undici 8 (`web_fetch`) finds `.2` empty, installs its dispatcher, and
+ *   writes a `Dispatcher1Wrapper` onto `.1`. After that, global fetch
+ *   returns gzip bodies with null headers, and `JSON.parse` fails on the
+ *   catalog. undici 7's fetch reads `.1` too, so calling it with no
+ *   dispatcher fails the same way.
  *
- * The same explicit dispatcher is required when no proxy is configured
- * (#742). Node 22's global fetch reads `Symbol.for('undici.globalDispatcher.1')`.
- * The first import of undici 8 in the host process (the `web_fetch` tool)
- * finds `.2` empty, installs its own dispatcher, and writes a
- * `Dispatcher1Wrapper` onto `.1`. After that, global fetch returns gzip
- * bodies with null headers, and `JSON.parse` fails on the catalog. undici 7's
- * own fetch reads `.1` too, so swapping the function is not enough: the
- * request has to carry a dispatcher this module created. A proxy request
- * already did. A direct request now does the same, with a plain `Agent`.
+ * The dispatcher is `EnvHttpProxyAgent` when a proxy is configured, and a
+ * plain `Agent` otherwise. Only requests made here take it. The host's own
+ * networking stays as the host configured it.
  */
 
 import { Agent, EnvHttpProxyAgent, fetch as undiciFetch } from 'undici'
@@ -95,11 +95,8 @@ let directAgent: Agent | null = null
 
 /**
  * Fetch through the proxy this machine is configured to use, or directly
- * through this module's own agent when it has none.
- *
- * Both paths pass a dispatcher. Without one, a direct call would use the
- * global fetch, and that fetch stays broken for the rest of the process
- * after the host imports undici 8 (#742).
+ * through this module's own agent when it has none. Both paths pass the
+ * dispatcher described on this module.
  */
 export async function marketFetch(
   url: string,
