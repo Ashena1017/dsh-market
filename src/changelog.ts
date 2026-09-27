@@ -283,7 +283,12 @@ export async function updateNotesFor(
     const specKey = repoKeyOf(spec) ?? lookupRepoFromUrl(spec)
     let key = specKey
     let entry = key === null ? undefined : entryForRepo(payload, key)
-    if (!usableNotes(entry)) {
+    // The catalog is how an npm install, or a `#path:` install whose notes
+    // live under a /tree/ url, finds a key the spec itself does not name.
+    // A root github spec already is that key. Loading the catalog on a root
+    // miss would wait out its timeout to answer "no notes".
+    const needsCatalog = specKey === null || (repoOfTarget(spec)?.includes('#path:/') ?? false)
+    if (!usableNotes(entry) && needsCatalog) {
       try {
         const registry = await loadRegistry()
         const plugin = specKey === null
@@ -295,18 +300,16 @@ export async function updateNotesFor(
           : catalogEntryForGitSubpath(registry.plugins, spec)
         if (plugin !== undefined) {
           const catalogEntry = entryForRepo(payload, plugin.url)
-          // An npm install may adopt a catalog url that has no probe yet:
-          // publish times are still the honest next tier. A spec that already
-          // named a repository keeps that key when the subpath row is empty,
-          // so the miss stays `none` rather than asking npm about a name that
-          // may not exist there.
-          if (usableNotes(catalogEntry) || specKey === null) {
+          // An empty row does not become the key. Publish times for an npm
+          // install follow from `specKey` staying null, and a subpath install
+          // keeps the root key so the miss stays `none`.
+          if (usableNotes(catalogEntry)) {
             key = plugin.url
             entry = catalogEntry
           }
         }
       } catch {
-        // Catalog unavailable; fall through to npm times.
+        // Catalog unavailable; the tiers below still answer.
       }
     }
     // Both tiers below need the installed sha for github-kind installs.
@@ -331,7 +334,7 @@ export async function updateNotesFor(
     }
     if (specKey === null) {
       // The install spec did not name a repository. Publish times remain
-      // even after a catalog url was found but had no probe data.
+      // when the catalog row is missing or its probe has no notes.
       return { kind: 'npm', npmTimes: await npmPublishTimes(name) }
     }
     // A github plugin whose repo answered nothing — releases 404 AND the log

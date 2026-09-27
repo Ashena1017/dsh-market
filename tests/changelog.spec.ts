@@ -187,6 +187,25 @@ describe('updateNotesFor', () => {
     await expect(updateNotesFor('web', dir, 'some-plugin')).resolves.toEqual({ kind: 'none' })
   })
 
+  it('does not consult the catalog when a github root install has no probe data', async () => {
+    writeProfile(dir, { 'some-plugin': 'github:o/r' })
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = String(input)
+      if (url.endsWith('/dsh-plugin-updates/latest')) return new Response('no', { status: 404 })
+      if (url.endsWith('updates.json')) return new Response(JSON.stringify({ count: 0, updates: {} }), { status: 200 })
+      if (url.includes('plugins.json') || url.includes('dsh-plugin-catalog')) {
+        return new Response(JSON.stringify({
+          plugins: [{ name: 'some-plugin', npm: 'some-plugin', url: 'https://github.com/o/r', category: 'utility' }],
+        }), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(updateNotesFor('web', dir, 'some-plugin')).resolves.toEqual({ kind: 'none' })
+    const urls = fetchMock.mock.calls.map(call => String(call[0]))
+    expect(urls.some(url => url.includes('plugins.json') || url.includes('dsh-plugin-catalog'))).toBe(false)
+  })
+
   it('treats locally linked plugins as having no notes rather than asking anything', async () => {
     writeProfile(dir, { 'local-plugin': 'link:/somewhere' })
     const fetchMock = vi.fn(async () => new Response('no', { status: 500 }))
