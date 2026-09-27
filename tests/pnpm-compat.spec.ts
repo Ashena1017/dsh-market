@@ -86,6 +86,43 @@ describe('classifyPnpmFailure', () => {
     expect(failed?.message).toContain('patchedDependencies')
   })
 
+  it('names the pinned patch that made pnpm refuse the whole command (#740)', () => {
+    // Verbatim from @lws2004's report. patchedDependencies is keyed on
+    // `pkg@exactVersion`; the installed version moved past the key, and pnpm
+    // 12 answers a stale patch by failing the WHOLE command and writing
+    // nothing — so the update looked like it simply never applied, and the
+    // log held only exit=1. Naming the entry is what turns that into
+    // something the user can act on.
+    const failed = classifyPnpmFailure([
+      'Command failed exit code 1: pnpm add -w \'dsh-skills-anywhere@0.13.0\' \'--reporter=ndjson\'',
+      'Error: ERR_PNPM_UNUSED_PATCH',
+      '',
+      '  × adding a new package',
+      '  ╰─▶ The following patches were not used: dsh-skills-anywhere@0.12.1',
+      '  help: Either remove them from "patchedDependencies" or update them to match',
+      '        packages in your dependencies.',
+    ].join('\n'))
+    expect(failed?.code).toBe('unused-patch')
+    expect(failed?.recoverable).toBe(false)
+    expect(failed?.pkg).toBe('dsh-skills-anywhere@0.12.1')
+    expect(failed?.message).toContain('dsh-skills-anywhere@0.12.1')
+    // The consequence the user actually needs: nothing was written at all.
+    expect(failed?.message).toContain('什么都没写')
+    expect(failed?.message).toContain('patchedDependencies')
+  })
+
+  it('still classifies the unused patch when the body arrives as an ndjson message', () => {
+    // pnpm's own error text reaches us inside the ndjson stream as often as
+    // on stderr, which is what withDecodedPnpmDiagnostics exists for.
+    const failed = classifyPnpmFailure(JSON.stringify({
+      name: 'pnpm',
+      level: 'error',
+      err: { code: 'ERR_PNPM_UNUSED_PATCH', message: 'The following patches were not used: dsh-restart@0.1.3-alpha.4' },
+    }))
+    expect(failed?.code).toBe('unused-patch')
+    expect(failed?.pkg).toBe('dsh-restart@0.1.3-alpha.4')
+  })
+
   it('explains a Windows locked-file rename instead of showing pnpm\'s stack (#389)', () => {
     // Verbatim from @qq1054435284's exported log: updating a plugin the
     // running dsh has loaded. pnpm stages the new version beside the old one
