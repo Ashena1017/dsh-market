@@ -187,6 +187,25 @@ describe('updateNotesFor', () => {
     await expect(updateNotesFor('web', dir, 'some-plugin')).resolves.toEqual({ kind: 'none' })
   })
 
+  it('does not consult the catalog when a github root install has no probe data', async () => {
+    writeProfile(dir, { 'some-plugin': 'github:o/r' })
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = String(input)
+      if (url.endsWith('/dsh-plugin-updates/latest')) return new Response('no', { status: 404 })
+      if (url.endsWith('updates.json')) return new Response(JSON.stringify({ count: 0, updates: {} }), { status: 200 })
+      if (url.includes('plugins.json') || url.includes('dsh-plugin-catalog')) {
+        return new Response(JSON.stringify({
+          plugins: [{ name: 'some-plugin', npm: 'some-plugin', url: 'https://github.com/o/r', category: 'utility' }],
+        }), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(updateNotesFor('web', dir, 'some-plugin')).resolves.toEqual({ kind: 'none' })
+    const urls = fetchMock.mock.calls.map(call => String(call[0]))
+    expect(urls.some(url => url.includes('plugins.json') || url.includes('dsh-plugin-catalog'))).toBe(false)
+  })
+
   it('treats locally linked plugins as having no notes rather than asking anything', async () => {
     writeProfile(dir, { 'local-plugin': 'link:/somewhere' })
     const fetchMock = vi.fn(async () => new Response('no', { status: 500 }))
@@ -302,5 +321,124 @@ describe('updateNotesFor', () => {
     const notes = await updateNotesFor('web', dir, 'dsh-cost-meter-nomatch')
     expect(notes.kind).toBe('npm')
     expect(notes.npmTimes?.[0]).toEqual({ version: '1.7.22', date: '2026-09-02T00:00:00Z' })
+  })
+
+  const RELEASE = {
+    tag: 'v2.3.2',
+    name: '2.3.2',
+    publishedAt: '2026-09-25T08:32:29Z',
+    url: 'https://github.com/owner/monorepo/releases/tag/v2.3.2',
+    body: 'tail is clickable again',
+  }
+  const TREE = 'https://github.com/owner/monorepo/tree/main/packages/pet'
+
+  function stubCatalog(payload: object, plugins: object[], times?: Record<string, string>): void {
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input)
+      if (url.endsWith('/dsh-plugin-updates/latest')) return new Response('no', { status: 404 })
+      if (url.endsWith('updates.json')) return new Response(JSON.stringify(payload), { status: 200 })
+      if (url.includes('awesome-dsh-plugin.com') || url.includes('plugins.json') || url.includes('dsh-plugin-catalog')) {
+        return new Response(JSON.stringify({ plugins }), { status: 200 })
+      }
+      if (times !== undefined && url.includes('registry.npmjs.org')) {
+        return new Response(JSON.stringify({ time: times }), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    }))
+  }
+
+  it('reads release notes for an npm install whose catalog name carries a subpath (#746)', async () => {
+    writeProfile(dir, { 'dsh-pet': '^2.3.2' })
+    stubCatalog(
+      { count: 1, updates: { [TREE]: { release: RELEASE } } },
+      [{ name: 'monorepo#pet', npm: 'dsh-pet', url: TREE, category: 'utility' }],
+    )
+    const notes = await updateNotesFor('web', dir, 'dsh-pet')
+    expect(notes.kind).toBe('release')
+    expect(notes.release?.body).toBe(RELEASE.body)
+  })
+
+  it('reads notes for an npm install whose catalog name is not the scoped package name (#746)', async () => {
+    const url = 'https://github.com/owner/dsh-memory'
+    writeProfile(dir, { '@scope/dsh-memory': '^1.0.0' })
+    stubCatalog(
+      { count: 1, updates: { [url]: { release: RELEASE } } },
+      [{ name: 'dsh-memory', npm: '@scope/dsh-memory', url, category: 'utility' }],
+    )
+    await expect(updateNotesFor('web', dir, '@scope/dsh-memory')).resolves.toMatchObject({
+      kind: 'release',
+      release: { body: RELEASE.body },
+    })
+  })
+
+  it('prefers the catalog row whose npm field is the installed package (#746)', async () => {
+    writeProfile(dir, { 'dsh-pet': '^2.3.2' })
+    stubCatalog(
+      {
+        count: 2,
+        updates: {
+          'https://github.com/other/dsh-pet': { release: { ...RELEASE, body: 'someone else' } },
+          [TREE]: { release: RELEASE },
+        },
+      },
+      [
+        { name: 'dsh-pet', npm: 'other-pkg', url: 'https://github.com/other/dsh-pet', category: 'utility' },
+        { name: 'monorepo#pet', npm: 'dsh-pet', url: TREE, category: 'utility' },
+      ],
+    )
+    const notes = await updateNotesFor('web', dir, 'dsh-pet')
+    expect(notes.kind).toBe('release')
+    expect(notes.release?.body).toBe(RELEASE.body)
+  })
+
+  it('keeps npm publish times when the matching catalog row has no probe data (#746)', async () => {
+    writeProfile(dir, { 'dsh-pet-empty': '^2.3.2' })
+    stubCatalog(
+      { count: 0, updates: {} },
+      [{ name: 'monorepo#pet', npm: 'dsh-pet-empty', url: TREE, category: 'utility' }],
+      { created: '2025-01-01T00:00:00Z', modified: '2026-09-01T00:00:00Z', '2.3.2': '2026-09-25T00:00:00Z' },
+    )
+    const notes = await updateNotesFor('web', dir, 'dsh-pet-empty')
+    expect(notes.kind).toBe('npm')
+    expect(notes.npmTimes?.[0]).toEqual({ version: '2.3.2', date: '2026-09-25T00:00:00Z' })
+  })
+
+  it('slices a subpath entry\'s commits at the repository recorded in the lockfile (#746)', async () => {
+    writeProfile(dir, { 'dsh-pet': '^2.3.2' }, [['owner/monorepo', SHA_B]])
+    stubCatalog(
+      { count: 1, updates: { [TREE]: { commits: COMMITS } } },
+      [{ name: 'monorepo#pet', npm: 'dsh-pet', url: TREE, category: 'utility' }],
+    )
+    await expect(updateNotesFor('web', dir, 'dsh-pet')).resolves.toEqual({
+      kind: 'commits',
+      commits: { items: [{ sha: SHA_C, message: 'third', date: '2026-08-26T03:00:00Z' }], found: true },
+    })
+  })
+
+  it('reads the tree-url notes for a github subpath install (#746)', async () => {
+    writeProfile(dir, { 'dsh-pet': 'github:owner/monorepo#path:/packages/pet' })
+    stubCatalog(
+      { count: 1, updates: { [TREE]: { release: RELEASE } } },
+      [
+        { name: 'monorepo#pet', npm: 'dsh-pet', url: TREE, category: 'utility' },
+        { name: 'monorepo#other', npm: 'dsh-other', url: 'https://github.com/owner/monorepo/tree/main/packages/other', category: 'utility' },
+      ],
+    )
+    const notes = await updateNotesFor('web', dir, 'dsh-pet')
+    expect(notes.kind).toBe('release')
+    expect(notes.release?.body).toBe(RELEASE.body)
+  })
+
+  it('does not use a sibling subpath when the installed path has no notes (#746)', async () => {
+    const other = 'https://github.com/owner/monorepo/tree/main/packages/other'
+    writeProfile(dir, { 'dsh-pet': 'github:owner/monorepo#path:/packages/pet' })
+    stubCatalog(
+      { count: 1, updates: { [other]: { release: RELEASE } } },
+      [
+        { name: 'monorepo#pet', npm: 'dsh-pet', url: TREE, category: 'utility' },
+        { name: 'monorepo#other', npm: 'dsh-other', url: other, category: 'utility' },
+      ],
+    )
+    await expect(updateNotesFor('web', dir, 'dsh-pet')).resolves.toEqual({ kind: 'none' })
   })
 })
