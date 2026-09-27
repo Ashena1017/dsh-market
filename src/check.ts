@@ -30,7 +30,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node
 import { createRequire, isBuiltin } from 'node:module'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { JSON_SCHEMA, Type, load } from 'js-yaml'
-import { findDshInstallDir } from './dsh-install.ts'
+import { desktopApplicationRoots, findDshInstallDir } from './dsh-install.ts'
 import { resolveDshHome } from './home-paths.ts'
 import { INBOX_BUNDLES, readBundleRules, suggestOrder, validateOrder } from './order.ts'
 
@@ -1079,6 +1079,58 @@ export function buildBundleLayers(
 }
 
 /**
+ * The installation's own bundle layer, when the installation package declares
+ * one — the Desktop shell's `cordis.patch.yml`.
+ *
+ * The Desktop launcher applies that file by hand rather than through the
+ * profile's `dsh.profile.bundles`, and splices it in directly behind the
+ * `@deepseek-ai/dsh-web-app` layer. Composing without it made every user-patch
+ * or home-patch row aimed at a row the shell inserts — `desktop-shell`,
+ * `desktop-notifications`, `desktop-terminal`, `desktop-pnpm`, … — read as an
+ * orphan ("patch target not found") although the running host resolves it. It
+ * is not noise: those rows are the shell's own settings persistence, so a user
+ * who believes the warning and deletes them loses the window mode and every
+ * notification preference.
+ *
+ * WHERE that package root is is not where `dshInstallDir` points; see
+ * {@link desktopApplicationRoots} for the candidates and why. A plain CLI
+ * install is unaffected: `@deepseek-ai/dsh` declares no bundle patch, and
+ * neither does any ancestor of a global install, so this returns null and the
+ * composer sees exactly the layers it saw before.
+ *
+ * @param dshInstall - install directory the analysis located, or null.
+ * @returns the overlay layer, or null when this installation declares none.
+ */
+function installOverlayLayer(dshInstall: string | null): LayerInput | null {
+  for (const directory of desktopApplicationRoots(dshInstall)) {
+    let manifest: { name?: unknown; dsh?: { bundle?: { patch?: unknown } } }
+    try {
+      manifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8')) as typeof manifest
+    } catch {
+      continue
+    }
+    const declared = manifest.dsh?.bundle?.patch
+    const declaredList = typeof declared === 'string'
+      ? [declared]
+      : Array.isArray(declared)
+        ? declared.filter((relative): relative is string => typeof relative === 'string')
+        : []
+    if (declaredList.length === 0) continue
+    const label = typeof manifest.name === 'string' && manifest.name !== '' ? manifest.name : 'install-overlay'
+    const paths = declaredList.map(relative => join(directory, relative))
+    if (paths.some(path => !existsSync(path))) {
+      return { label, kind: 'bundle', patches: [], parseError: 'declared patch is missing' }
+    }
+    const parsed = paths.map(path => parsePatchFile(path))
+    if (parsed.some(patches => patches === null)) {
+      return { label, kind: 'bundle', patches: [], parseError: 'patch file is not a valid entry list' }
+    }
+    return { label, kind: 'bundle', patches: parsed.flatMap(patches => patches), parseError: null }
+  }
+  return null
+}
+
+/**
  * Which directories in `node_modules` are leftovers (#663).
  *
  * Two shapes, and both need to be VISIBLE rather than cleaned: a directory
@@ -1190,6 +1242,15 @@ export function analyzeProfile(profileDirectory: string, options: CheckOptions =
   const built = buildBundleLayers(profileDirectory, bundleNames, specs, dshInstall)
   const bundles = built.bundles
   const bundleLayers = built.layers
+  // The installation's own overlay rides directly behind the bundle the
+  // Desktop launcher keys off, exactly where the launcher splices it — see
+  // installOverlayLayer.
+  const installOverlay = installOverlayLayer(dshInstall)
+  if (installOverlay !== null) {
+    const overlayAfter = bundleLayers.findIndex(layer => layer.label === '@deepseek-ai/dsh-web-app')
+    if (overlayAfter < 0) bundleLayers.push(installOverlay)
+    else bundleLayers.splice(overlayAfter + 1, 0, installOverlay)
+  }
 
   // --- 2. composed loader rows / duplicates / overrides / orphans ---
   const layers: LayerInput[] = [...bundleLayers]

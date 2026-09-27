@@ -18,7 +18,7 @@ import {
   findDshInstallDir,
   satisfiesRange,
 } from '../src/check.ts'
-import { dshHostInfo } from '../src/dsh-install.ts'
+import { desktopApplicationRoots, dshHostInfo } from '../src/dsh-install.ts'
 import { readBundleRules } from '../src/order.ts'
 import { canCreateSymlink } from './symlink-support.ts'
 import { trialValidate } from '../src/trial.ts'
@@ -1452,6 +1452,120 @@ describe('Desktop host discovery (#405)', () => {
     expect(report.summary.warnings).not.toContain(
       'dsh-vision-router: attachment-local — patch target not found',
     )
+  })
+})
+
+/**
+ * The Desktop shell applies its own `cordis.patch.yml` by hand, right behind
+ * the `@deepseek-ai/dsh-web-app` layer — it is never in `dsh.profile.bundles`.
+ * Composing without it reported the shell's own settings rows as orphan
+ * patches, which is the one warning a user must NOT act on: deleting those rows
+ * drops the window mode and every notification preference (#748).
+ */
+describe('the installation own overlay layer (#748)', () => {
+  /** A packaged Desktop: the shell package root, its overlay, and the host package beside it. */
+  function desktop(): string {
+    const app = join(tmp, 'resources', 'app')
+    writeProfile(app, {
+      name: 'dsh-plugin-desktop',
+      version: '2.0.15',
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+    })
+    writeFileSync(
+      join(app, 'cordis.patch.yml'),
+      dump([
+        {
+          insert: [
+            { id: 'desktop-shell', name: 'dsh-plugin-desktop' },
+            { id: 'desktop-notifications', name: 'dsh-plugin-desktop/notifications' },
+          ],
+        },
+        { id: 'web-runtime', config: { openBrowser: false, printUrl: false } },
+      ]),
+    )
+    // The host package findDshInstallDir() answers with: an ancestor of the
+    // shell root, never the shell root itself.
+    writePackage(app, '@deepseek-ai/dsh', { name: '@deepseek-ai/dsh', version: '0.1.7-rc.2' })
+    writeBundle(app, '@deepseek-ai/dsh-web-app', '0.1.7-rc.2', [
+      { insert: [{ id: 'web-runtime', name: '@deepseek-ai/dsh-web-app' }] },
+    ])
+    return app
+  }
+
+  it('offers the application root from the install package and from Electron resources', () => {
+    const app = desktop()
+    const install = join(app, 'node_modules', '@deepseek-ai', 'dsh')
+    Object.defineProperty(process, 'resourcesPath', {
+      value: join(tmp, 'resources'),
+      configurable: true,
+    })
+
+    const fromInstall = desktopApplicationRoots(install)
+    expect(fromInstall).toContain(install)
+    expect(fromInstall).toContain(app)
+    expect(desktopApplicationRoots(null)).toContain(app)
+  })
+
+  it('composes that layer, so a user patch targeting the shell rows is not an orphan', () => {
+    const app = desktop()
+    const dir = pdir()
+    writeProfile(dir, {
+      name: 'desktop-profile',
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-web-app'] } },
+    })
+    writeFileSync(join(dir, 'cordis.patch.yml'), dump([
+      { id: 'desktop-shell', config: { mode: 'extended' } },
+      { id: 'desktop-notifications', config: { enabled: true } },
+      { id: 'web-runtime', config: { printUrl: false } },
+    ]))
+
+    const report = analyzeProfile(dir, {
+      dshInstallDir: join(app, 'node_modules', '@deepseek-ai', 'dsh'),
+      homeDir: join(tmp, 'empty-home'),
+    })
+
+    expect(report.orphans).toEqual([])
+    expect(report.rows.filter(row => row.id.startsWith('desktop-'))).toMatchObject([
+      { id: 'desktop-shell', layer: 'dsh-plugin-desktop' },
+      { id: 'desktop-notifications', layer: 'dsh-plugin-desktop' },
+    ])
+    // The two boundaries the launcher's splice position defines: after the web
+    // carrier, before the user patch.
+    expect(report.overrides).toContainEqual({
+      id: 'web-runtime',
+      layer: 'dsh-plugin-desktop',
+      overriddenLayers: ['@deepseek-ai/dsh-web-app'],
+    })
+    expect(report.overrides).toContainEqual({
+      id: 'desktop-shell',
+      layer: 'user-patch',
+      overriddenLayers: ['dsh-plugin-desktop'],
+    })
+    expect(report.summary.warnings).not.toContain(
+      'user-patch: desktop-shell — patch target not found',
+    )
+  })
+
+  it('invents no overlay for an installation that declares none', () => {
+    const dir = pdir()
+    writeProfile(dir, { name: 'web-profile', dsh: { profile: { bundles: [] } } })
+    writeFileSync(join(dir, 'cordis.patch.yml'), dump([
+      { id: 'desktop-shell', config: { mode: 'extended' } },
+    ]))
+    const install = writePackage(pdir('cli-install'), '@deepseek-ai/dsh', {
+      name: '@deepseek-ai/dsh',
+      version: '0.1.7-rc.2',
+    })
+
+    const report = analyzeProfile(dir, { dshInstallDir: install, homeDir: join(tmp, 'empty-home') })
+
+    // `desktop-shell` is still an orphan here — the honest answer for a profile
+    // whose installation ships no overlay, and what keeps this lookup from
+    // suppressing a real one.
+    expect(report.orphans).toEqual([
+      { id: 'desktop-shell', layer: 'user-patch', reason: 'patch target not found' },
+    ])
+    expect(report.rows.filter(row => row.layer === 'dsh-plugin-desktop')).toEqual([])
   })
 })
 
