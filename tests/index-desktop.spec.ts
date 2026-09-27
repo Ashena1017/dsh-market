@@ -159,6 +159,32 @@ describe('profile the launcher booted (#639)', () => {
     expect(state.mounts[0].config.profileDirectory).toBeUndefined()
   })
 
+  it('takes the official branch for an explicit `profile: desktop`, which the CLI would refuse (#744)', () => {
+    // The reporter's own workaround for a host that hides `profileContext`:
+    // name the profile in cordis.yml. Before this, that configuration landed
+    // on the CLI branch, whose `dsh plugin --profile desktop` is refused by
+    // NAME — so every install failed for certain, workaround and all.
+    const ctx = new FakeContext({ webServer: {}, loader: {} })
+
+    apply(ctx as never, { profile: 'desktop' })
+
+    expect(state.officialFactoryArgs).toHaveLength(1)
+    expect(state.officialFactoryArgs[0]?.slice(1)).toEqual(['desktop', undefined])
+    expect(state.mounts[0].config).toMatchObject({ profile: 'desktop', desktopHost: true, allowRestart: false })
+    // No launcher answered, so no directory: the routes derive it, exactly as
+    // they do for the flag-and-default path.
+    expect(state.mounts[0].config.profileDirectory).toBeUndefined()
+  })
+
+  it('keeps the launcher\'s directory when it names the same profile (#744)', () => {
+    const ctx = new FakeContext({ webServer: {}, loader: {}, profileContext: launcher })
+
+    apply(ctx as never, { profile: 'Desktop' })
+
+    expect(state.officialFactoryArgs[0]?.slice(1)).toEqual(['Desktop', launcher.dir])
+    expect(state.mounts[0].config).toMatchObject({ profile: 'Desktop', profileDirectory: launcher.dir })
+  })
+
   it('falls back to the flag and then to web when the launcher says nothing usable', () => {
     for (const context of [undefined, {}, { name: '  ', dir: '/d' }, { name: '../escape', dir: '/d' }, { name: 'ok', dir: '' }]) {
       state.mounts = []
