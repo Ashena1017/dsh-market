@@ -17,23 +17,32 @@ import { describeFetchFailure, forgetCatalog, loadRegistry } from '../src/regist
 import { configuredProxy, marketFetch } from '../src/net.ts'
 
 /**
- * undici stands in for the real outbound path. `marketFetch` routes through
- * EnvHttpProxyAgent only when a proxy is configured, and the assertion that
- * matters is exactly which proxy URLs the agent was built with —
- * npm_config_* is invisible to EnvHttpProxyAgent, so the explicit handoff
- * is what makes the npm fallback real instead of a name the failure message
- * claims was tried.
+ * undici stands in for the real outbound path. Every `marketFetch` goes
+ * through it with an explicit dispatcher (#742): `EnvHttpProxyAgent` when a
+ * proxy is configured, a plain `Agent` otherwise. The assertion that matters
+ * for a proxy is exactly which URLs the agent was built with — npm_config_*
+ * is invisible to EnvHttpProxyAgent, so the explicit handoff is what makes
+ * the npm fallback real instead of a name the failure message claims was
+ * tried. `fetch` forwards to the global stub when one is installed, so the
+ * catalog script below still observes the request.
  */
 const undici = vi.hoisted(() => ({
-  fetch: vi.fn(async () => new Response('ok', { status: 200 })),
+  fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (vi.isMockFunction(globalThis.fetch)) return globalThis.fetch(input, init)
+    return new Response('ok', { status: 200 })
+  }),
   EnvHttpProxyAgent: vi.fn(function (this: unknown, opts?: unknown) {
     return { opts }
+  }),
+  Agent: vi.fn(function (this: unknown) {
+    return { direct: true }
   }),
 }))
 
 vi.mock('undici', () => ({
   fetch: undici.fetch,
   EnvHttpProxyAgent: undici.EnvHttpProxyAgent,
+  Agent: undici.Agent,
 }))
 
 const CATALOG = {
@@ -479,6 +488,7 @@ describe('marketFetch', () => {
   beforeEach(() => {
     undici.fetch.mockClear()
     undici.EnvHttpProxyAgent.mockClear()
+    undici.Agent.mockClear()
   })
 
   it('hands npm-config proxies to the agent explicitly — EnvHttpProxyAgent cannot see them', async () => {
@@ -497,9 +507,22 @@ describe('marketFetch', () => {
     )
   })
 
-  it('stays on the global fetch when there is no proxy anywhere', async () => {
+  it('uses its own dispatcher when no proxy is configured (#742)', async () => {
+    // Node 22's global fetch shares a dispatcher symbol with undici 8. After
+    // the host's first web_fetch import, that symbol points at a wrapper the
+    // builtin fetch cannot decompress, so a direct catalog read comes back
+    // as gzip. Carrying an Agent this module created is what keeps the body
+    // decoded; calling global fetch, or undici's fetch with no dispatcher,
+    // both fail. The agent is reused, so a second call does not build another.
     vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })))
     await marketFetch('https://catalog.example/plugins.json')
-    expect(undici.fetch).not.toHaveBeenCalled()
+    await marketFetch('https://catalog.example/plugins.json')
+    expect(undici.EnvHttpProxyAgent).not.toHaveBeenCalled()
+    const calls = undici.fetch.mock.calls
+    expect(calls).toHaveLength(2)
+    const first = calls[0]?.[1] as { dispatcher?: unknown } | undefined
+    const second = calls[1]?.[1] as { dispatcher?: unknown } | undefined
+    expect(first?.dispatcher).toEqual({ direct: true })
+    expect(second?.dispatcher).toBe(first?.dispatcher)
   })
 })

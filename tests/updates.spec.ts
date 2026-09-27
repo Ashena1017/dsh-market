@@ -260,7 +260,8 @@ describe('checkUpdates — private git hosts (#525)', () => {
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'dshm-giteahome-'))
-    // marketFetch uses undici when a proxy is set, which bypasses stubGlobal('fetch').
+    // A proxy in the environment selects EnvHttpProxyAgent inside marketFetch.
+    // These cases want the direct agent, so the machine's proxy must not leak in.
     for (const key of proxyKeys) {
       savedProxy[key] = process.env[key]
       delete process.env[key]
