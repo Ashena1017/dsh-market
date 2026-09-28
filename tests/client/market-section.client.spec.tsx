@@ -11,6 +11,8 @@ import { resolve } from 'node:path'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarketSection, OwnerAvatar, resetMarketPortalHost, resetThemePreviewCache } from '../../src/client/MarketSection.tsx'
+import css from '../../src/client/Market.module.css'
+import { downloadStatsText } from '../../src/client/download-stats.ts'
 import { SEARCH_DELAY_MS } from '../../src/client/SearchInput.tsx'
 import {
   pluginScreenshotCandidates, resetGithubRouting, resetScreenshotsCache, setGithubRoutes,
@@ -703,6 +705,50 @@ describe('MarketSection (jsdom)', () => {
     expect(await screen.findByRole('button', { name: en.confirmInstall })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: en.cancel }))
     await waitFor(() => expect(screen.queryByRole('button', { name: en.confirmInstall })).toBeNull())
+  })
+
+  it('the install dialog reads the blurb as body text and keeps download methodology on the mark (#739)', async () => {
+    const plugin = {
+      name: 'dsh-loop', owner: 'alice', url: 'https://github.com/alice/dsh-loop',
+      category: ['tools'], npm: 'dsh-loop', stars: 50, added: '2026-08-01', version: '1.2.3',
+      downloads: 162500, downloadsStart: '2026-08-01', downloadsEnd: '2026-08-28', downloadsCheckedAt: '2026-08-28',
+      description: { en: 'Loop task runner', zh: '循环执行' }, install: 'dsh plugin install dsh-loop',
+    }
+    const tip = downloadStatsText(plugin, key => en[key])!
+    stubFetch({
+      '/dsh-market/registry': {
+        source: 'live',
+        hostVersion: '0.1.2-alpha.2',
+        registry: { ...REGISTRY, count: 1, plugins: [plugin] },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    // The card still uses the compact blurb. The methodology is not a paragraph.
+    expect(screen.getByText('Loop task runner').classList.contains(css.desc)).toBe(true)
+    expect(screen.queryByText(/Not lifetime downloads/)).toBeNull()
+    expect(screen.queryByText('2026-08-01')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    await screen.findByRole('button', { name: en.confirmInstall })
+
+    const blurbs = screen.getAllByText('Loop task runner')
+    expect(blurbs.some(el => el.classList.contains(css.desc))).toBe(true)
+    const dialogBlurb = blurbs.find(el => el.classList.contains(css.confirmDesc))
+    expect(dialogBlurb).toBeTruthy()
+    expect(dialogBlurb!.classList.contains(css.desc)).toBe(false)
+
+    const published = screen.getByText(/2026-08-01/)
+    expect(published.getAttribute('title')).toBe(en.published)
+    expect(screen.queryByText(`${en.published} 2026-08-01`)).toBeNull()
+
+    expect(screen.queryByText(/Not lifetime downloads/)).toBeNull()
+    const marks = screen.getAllByLabelText(tip)
+    expect(marks.length).toBeGreaterThanOrEqual(1)
+    expect(marks.every(el => el.tabIndex === 0)).toBe(true)
+
+    expect(document.getElementsByClassName(css.confirmFold).length).toBe(1)
+    expect(screen.getAllByText('Tools').length).toBeGreaterThanOrEqual(1)
   })
 
   it('offers the release a hold kept back, and installs it when asked (#635)', async () => {

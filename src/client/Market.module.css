@@ -133,6 +133,16 @@
    squeezed into a vertical stack instead of dropping to its own line. */
 .warnLine{color:var(--dsw-alias-state-warn-primary,#b45309);font-weight:600;font-size:12px;line-height:18px;margin:0;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 .modalNote{font-size:12px;color:var(--dsw-alias-label-tertiary,#8b93a1);line-height:18px;margin:12px 0 0;display:flex;align-items:center;gap:4px}
+/* Install confirm (#739). Card density is for a grid; this dialog is the
+   decision, so the blurb is body text and the signature, the blurb, and the
+   disclosures are separate bands. The card's own .desc / .byline stay put. */
+.confirmBody{display:flex;flex-direction:column;gap:12px}
+.confirmBody .byline{margin-top:0}
+.confirmBody .shots{margin:0;padding:0}
+.confirmBody .modalNote{margin:0}
+.confirmTags{display:flex;flex-wrap:wrap;gap:6px}
+.confirmDesc{margin:0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary,#1f2328);white-space:pre-wrap}
+.confirmFold{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--dsw-alias-border-l2,#e5e7eb);padding-top:12px}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:10px}
 /* Masonry: two independent columns, each packing its own cards tight.
    A CSS grid cannot do this — its rows are as tall as their tallest cell, so

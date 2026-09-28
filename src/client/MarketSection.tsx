@@ -6292,7 +6292,10 @@ export function MarketSection(props: MarketSectionProps) {
           {/* The detail dialog has to show at LEAST what the card already
               does — owner, version, downloads, stars, published date, category —
               a "detail" view that shows less than the summary it opened from
-              is backwards. */}
+              is backwards. The rolling-window explanation stays on the
+              download mark (hover, focus, aria-label): repeating it as the
+              first paragraph made the methodology louder than the blurb (#739). */}
+          <div className={css.confirmBody}>
           <div className={css.byline}>
             <OwnerAvatar name={confirming.name} owner={confirming.owner || ''} />
             <span className={css.owner} title={confirming.owner}>{confirming.owner}</span>
@@ -6303,25 +6306,35 @@ export function MarketSection(props: MarketSectionProps) {
                 <span className={css.star}>{'· ★ ' + formatCount(confirming.stars)}</span>
               </Tooltip>
             )}
-            <span className={css.grow} />
-            {pluginCategories(confirming).map(category => (
-              <span key={category} className={css.tag}>
-                {(data!.categories[category] && (data!.categories[category]![lang] || data!.categories[category]!.en)) || category}
-              </span>
-            ))}
+            {/* The date left the card footer when that row got crowded; the
+                dialog is wide enough to keep it on the signature line (#739). */}
+            {confirming.added && (
+              <span className={css.star} title={t('published')}>{'· ' + confirming.added}</span>
+            )}
           </div>
-          {confirming.added && <div className={css.metaInline}>{t('published') + ' ' + confirming.added}</div>}
-          {downloadStatsText(confirming, t) !== null && (
-            <div className={css.metaInline}>{downloadStatsText(confirming, t)}</div>
+          {pluginCategories(confirming).length > 0 && (
+            <div className={css.confirmTags}>
+              {pluginCategories(confirming).map(category => (
+                <span key={category} className={css.tag}>
+                  {(data!.categories[category] && (data!.categories[category]![lang] || data!.categories[category]!.en)) || category}
+                </span>
+              ))}
+            </div>
           )}
           {/* The Modal primitive's own `description` prop is sized for a
               one-line subtitle under the title — a full plugin description
               rendered there read as an oversized heading, not body text
-              (reported on a real host). Rendering it here, at the card's own
-              size, also matches the card's own reading order: name, byline,
-              description, then screenshots. */}
-          <CardDesc text={(confirming.description && (confirming.description[lang] || confirming.description.en)) || ''} t={t} />
+              (reported on a real host). The card's .desc is tertiary and
+              clamped so a grid stays even; here the blurb is what the dialog
+              is for, so it takes body color and body size (#739). */}
+          {(() => {
+            const text = (confirming.description && (confirming.description[lang] || confirming.description.en)) || ''
+            return text === '' ? null : <p className={css.confirmDesc}>{text}</p>
+          })()}
           <ScreenshotStrip plugin={confirming} onOpen={openLightbox} />
+          {/* A rule between "what it is" and the disclosures. Without it the
+              fold rows sat in the same block as the blurb (#739). */}
+          <div className={css.confirmFold}>
           {capabilityDetail(confirming)}
           <DisclosureRow
             icon={<IconCodeOutline16 size={16} />}
@@ -6333,6 +6346,7 @@ export function MarketSection(props: MarketSectionProps) {
           >
             <div className={css.cmd}>{confirming.install}</div>
           </DisclosureRow>
+          </div>
           {looksTerminal(confirming, lang) && (
             <p className={css.warnLine}>
               <IconWarningOutline16 size={14} className={css.bannerIcon} />
@@ -6356,6 +6370,7 @@ export function MarketSection(props: MarketSectionProps) {
             )
           })()}
           <p className={css.modalNote}><IconWarningOutline16 size={14} className={css.bannerIcon} />{' ' + t('confirmWarn')}</p>
+          </div>
         </Modal>
       )}
       {recovery !== null && (
