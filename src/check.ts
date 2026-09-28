@@ -1098,6 +1098,11 @@ export function buildBundleLayers(
  * neither does any ancestor of a global install, so this returns null and the
  * composer sees exactly the layers it saw before.
  *
+ * A candidate is accepted only when it is actually an installation — it must
+ * ship the in-box `@deepseek-ai/dsh-web-app` bundle this overlay is spliced
+ * behind (see the check below). A declared patch alone is not evidence: any
+ * project may declare one.
+ *
  * @param dshInstall - install directory the analysis located, or null.
  * @returns the overlay layer, or null when this installation declares none.
  */
@@ -1116,6 +1121,16 @@ function installOverlayLayer(dshInstall: string | null): LayerInput | null {
         ? declared.filter((relative): relative is string => typeof relative === 'string')
         : []
     if (declaredList.length === 0) continue
+    // A bundle patch alone does not make a directory an installation: ANY
+    // package can declare one — this repository does, and so does every plugin
+    // repo. Without this bound the ancestor walk accepted the nearest such
+    // project above the install directory and composed its rows as if they
+    // were the installation's own, which invents rows and can mask a real
+    // orphan warning (#749 review). A DSH installation ships the in-box web
+    // bundle, and the launcher splices this very overlay directly behind that
+    // bundle's layer — where it is absent, the launcher applies no overlay
+    // either, so composing one here would describe a composition nobody runs.
+    if (readNodeModulesVersion(directory, '@deepseek-ai/dsh-web-app') === null) continue
     const label = typeof manifest.name === 'string' && manifest.name !== '' ? manifest.name : 'install-overlay'
     const paths = declaredList.map(relative => join(directory, relative))
     if (paths.some(path => !existsSync(path))) {

@@ -1501,9 +1501,40 @@ describe('the installation own overlay layer (#748)', () => {
     })
 
     const fromInstall = desktopApplicationRoots(install)
-    expect(fromInstall).toContain(install)
-    expect(fromInstall).toContain(app)
+    // The walk resolves the entry through symlinks (`entryDirectories`), and
+    // on macOS `tmpdir()` is one: `/var/folders/…` is `/private/var/folders/…`.
+    // Compare like for like, or this passes on Linux and fails on the
+    // maintainer's machine (the `resourcesPath` branch below is not resolved,
+    // which is why the last assertion compares the raw path).
+    expect(fromInstall).toContain(realpathSync(install))
+    expect(fromInstall).toContain(realpathSync(app))
     expect(desktopApplicationRoots(null)).toContain(app)
+  })
+
+  it('does not compose a project that merely declares a bundle patch (#749 review)', () => {
+    // The ancestor walk exists because the shell's package root is an ancestor
+    // of the `@deepseek-ai/dsh` package directory. But ANY project can declare
+    // `dsh.bundle.patch` — this repository does — so a project root above the
+    // install used to be composed as the installation's own overlay, inventing
+    // rows and able to mask a real orphan warning.
+    const project = join(tmp, 'project')
+    mkdirSync(project, { recursive: true })
+    writeFileSync(join(project, 'cordis.patch.yml'), dump([
+      { insert: [{ id: 'project-row', name: 'project-bundle' }] },
+    ]))
+    writeProfile(project, { name: 'some-project', dsh: { bundle: { patch: './cordis.patch.yml' } } })
+    // The installation the lookup answered with: a package that declares none,
+    // sitting inside that project's node_modules exactly as a linked install
+    // would.
+    const install = writePackage(project, '@deepseek-ai/dsh', { name: '@deepseek-ai/dsh', version: '0.1.7-rc.2' })
+
+    const dir = pdir()
+    writeProfile(dir, { name: 'web-profile', dsh: { profile: { bundles: [] } } })
+
+    const report = analyzeProfile(dir, { dshInstallDir: install, homeDir: join(tmp, 'empty-home') })
+
+    expect(report.rows.filter(row => row.id === 'project-row')).toEqual([])
+    expect(report.rows.filter(row => row.layer === 'some-project')).toEqual([])
   })
 
   it('composes that layer, so a user patch targeting the shell rows is not an orphan', () => {
