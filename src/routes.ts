@@ -4000,14 +4000,27 @@ sendJson(response, 200, { updates })
               const lock = lockfileCapture.ok
                 ? restoreProfileLockfile(lockfileCapture.snapshot)
                 : { ok: false, detail: lockfileCapture.detail }
-              if (!lock.ok) return { ...lock, missingEntry: false }
+              // The entry check runs BEFORE the lockfile's verdict, because it
+              // does not depend on it and it is the one that decides whether
+              // the profile may keep declaring this package. Answering the
+              // lockfile first hard-coded `missingEntry: false` (#663 review):
+              // a build pnpm had already emptied then fell to the "could not be
+              // fully restored" branch — which only logs — while
+              // `restoreProfileManifest` above had ALREADY put the declaration
+              // back. The next start failed composition, which is the exact
+              // failure this branch exists to prevent.
               if (!hasLoadableEntry(activeProfileDir, name)) {
+                const incomplete = 'the previous build is incomplete (package.json or its entry file is missing)'
                 return {
                   ok: false,
-                  detail: 'the previous build is incomplete (package.json or its entry file is missing)',
+                  // The lockfile's own reason is worth keeping on the record:
+                  // it is logged beside this verdict, and losing it would make
+                  // "why was nothing restored" unanswerable.
+                  detail: lock.ok || lock.detail === null ? incomplete : `${incomplete} — ${lock.detail}`,
                   missingEntry: true,
                 }
               }
+              if (!lock.ok) return { ...lock, missingEntry: false }
               return { ok: true, detail: null, missingEntry: false }
             }
 

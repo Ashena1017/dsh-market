@@ -109,6 +109,13 @@ const fake = vi.hoisted(() => ({
    * rollback add hits it too.
    */
   hostHoldsOpen: null as { name: string; cleared?: string[] } | null,
+  /**
+   * Make the lockfile un-RESTORABLE during that same locked failure (#663
+   * review): the capture before the run succeeded (it was a readable file),
+   * and pnpm then left something the market cannot put back. A directory is
+   * the portable way to say that — renaming a file over it is refused.
+   */
+  wreckLockOnLockedFailure: false,
   /** Simulate dsh adding a profile bundle before that same add later fails (#339). */
   profileBundleOnNextAdd: null as string | null,
   /** Make restore's bulk install fail so its per-plugin fallback is exercised. */
@@ -452,7 +459,13 @@ vi.mock('../src/dsh-cli.ts', () => {
     const nextSpec = `^${version}`
     if (fake.hostHoldsOpen?.name === name) {
       writeDep(name, nextSpec)
-      writeNpmLock(name, nextSpec, version)
+      if (fake.wreckLockOnLockedFailure) {
+        const lockPath = join(fake.profileDir, 'pnpm-lock.yaml')
+        rmSync(lockPath, { force: true })
+        mkdirSync(lockPath, { recursive: true })
+      } else {
+        writeNpmLock(name, nextSpec, version)
+      }
       for (const rel of fake.hostHoldsOpen.cleared ?? []) rmSync(join(fake.profileDir, 'node_modules', name, rel), { force: true })
       return {
         exitCode: 1, timedOut: false, stdout: '', cancelled: false,
@@ -789,6 +802,7 @@ beforeEach(() => {
   fake.hoistDiffTimes = 0
   fake.youngLockfile = false
   fake.hostHoldsOpen = null
+  fake.wreckLockOnLockedFailure = false
   fake.gate = null
   fake.cancelNext = false
   fake.buildScriptOutputOnce = ''
@@ -1918,6 +1932,41 @@ describe('update flow — no npm publishing required', () => {
     expect(Object.keys(listed.json.installed)).not.toContain('dsh-loop')
     const logs = await bed.dispatch('GET', '/dsh-market/logs')
     expect(logs.text).toContain('update-removed-declaration')
+  })
+
+  it('drops a broken declaration even when the lockfile cannot be put back (#663 review)', async () => {
+    // The path the #663 review found uncovered, reached the way it is actually
+    // reachable: `captureProfileLockfile()` SUCCEEDS before the run (the file is
+    // a readable file), and the restore afterwards fails because pnpm left
+    // something un-restorable behind. The entry check is what must decide here.
+    //
+    // Answering the lockfile's failure first hard-coded `missingEntry: false`,
+    // and `restoreProfileManifest()` above had ALREADY put the declaration
+    // back — so the profile went on declaring a package that cannot compose,
+    // and the next start found out. That is the failure this branch exists to
+    // prevent, so the verdict must not depend on the lockfile half.
+    advanceNpmLatest('1.2.0')
+    const specBefore = installedSpec('dsh-loop')
+    fake.hostHoldsOpen = { name: 'dsh-loop', cleared: ['lib/index.js'] }
+    fake.profileBundleOnNextAdd = 'dsh-loop'
+    fake.wreckLockOnLockedFailure = true
+
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+
+    // Still a failure, and the previous build is still the thing we could not
+    // keep — but the declaration goes, so the next start can compose.
+    expect(r.status).toBe(502)
+    expect(r.json.removedDeclaration).toMatchObject({
+      name: 'dsh-loop', spec: specBefore, reason: 'incomplete-build-locked',
+    })
+    const manifest = readManifestAt(fake.profileDir)
+    expect(manifest.dependencies?.['dsh-loop']).toBeUndefined()
+    expect(manifest.dsh?.profile?.bundles ?? []).not.toContain('dsh-loop')
+    // The lockfile's own reason survives onto the record, so "why was nothing
+    // restored" is still answerable from the log.
+    const logs = await bed.dispatch('GET', '/dsh-market/logs')
+    expect(logs.text).toContain('update-removed-declaration')
+    expect(logs.text).toContain('could not be restored')
   })
 
   it('forgets the removed declaration once the plugin is installed again (#663)', async () => {
