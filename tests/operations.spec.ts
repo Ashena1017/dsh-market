@@ -86,6 +86,9 @@ describe('summarize', () => {
     ])
     expect(summary.running).toBe(1)
     expect(summary.queued).toBe(2)
+    // Neither queued record carries blockers here: `blocked` counts only the
+    // ones the agent guard refused (#752).
+    expect(summary.blocked).toBe(0)
     expect(summary.attention).toBe(1)
     // failed is settled; input is not, so it is excluded from the total the
     // "3 / 7" progress line divides.
@@ -94,9 +97,24 @@ describe('summarize', () => {
     expect(summary.progressed).toBe(4)
   })
 
+  it('counts the queued records the agent guard is holding (#752)', () => {
+    // The aggregate line needs this apart from `queued`: with nothing running,
+    // "installing 0/3" states a contradiction, while "3 waiting for the agents
+    // to go idle" names the obstacle. A record with no blockers keeps the
+    // ordinary queue copy.
+    const summary = summarize([
+      rec('1', 'queued', { blockedBy: ['session-a', 'session-b'] }),
+      rec('2', 'queued', { blockedBy: ['session-a'] }),
+      rec('3', 'queued'),
+      rec('4', 'running'),
+    ])
+    expect(summary.queued).toBe(3)
+    expect(summary.blocked).toBe(2)
+  })
+
   it('is all zeroes for an empty panel', () => {
     expect(summarize([])).toEqual({
-      running: 0, queued: 0, attention: 0, settled: 0, total: 0, progressed: 0,
+      running: 0, queued: 0, blocked: 0, attention: 0, settled: 0, total: 0, progressed: 0,
     })
   })
 })

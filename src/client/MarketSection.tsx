@@ -1306,6 +1306,22 @@ interface SourceMigrationConfirm {
   target: string
 }
 
+/**
+ * The sessions a host 409 named as blocking (#752).
+ *
+ * The agent guard refuses before it touches pnpm and answers with the sessions
+ * that are running. Keeping them on the record is what lets a queued row say
+ * WHY it is not moving: a queue entry with no reason reads as an operation
+ * that is merely last in line, and "it never starts" is what the user reports.
+ *
+ * @returns the session names, or undefined when the host named none.
+ */
+function blockedSessions(body: { runningAgents?: unknown }): string[] | undefined {
+  if (!Array.isArray(body.runningAgents)) return undefined
+  const names = body.runningAgents.map(String).filter(name => name !== '')
+  return names.length === 0 ? undefined : names
+}
+
 export function MarketSection(props: MarketSectionProps) {
   const t = props.t
   const initialWebdav = useMemo(savedWebdav, [])
@@ -2607,8 +2623,14 @@ export function MarketSection(props: MarketSectionProps) {
               // Agents-busy is a queue, not a failure: keep the record as
               // `queued` so the drain below runs it when agents go idle.
               // The host changed nothing (it refuses before touching pnpm),
-              // so there is nothing to roll back and nothing to decide.
-              setRecords(list => patchRecord(list, recordId, { state: 'queued', reason: t('agentBusyQueued') }))
+              // so there is nothing to roll back and nothing to decide — but
+              // the row has to say what is holding it, or "queued" reads as
+              // "waiting its turn" while it never moves at all (#752).
+              setRecords(list => patchRecord(list, recordId, {
+                state: 'queued',
+                reason: t('agentBusyQueued'),
+                blockedBy: blockedSessions(body),
+              }))
               setOperationsOpen(true)
               return
             }
@@ -2961,8 +2983,13 @@ export function MarketSection(props: MarketSectionProps) {
             if (body.agentsBusy === true) {
               // Same queue treatment as installs: the host refused before
               // touching pnpm, so this becomes a `queued` record the drain
-              // runs when agents go idle.
-              setRecords(list => patchRecord(list, updateRecordId, { state: 'queued', reason: t('agentBusyUpdateQueued') }))
+              // runs when agents go idle — carrying the sessions that are
+              // holding it, so the row can say why (#752).
+              setRecords(list => patchRecord(list, updateRecordId, {
+                state: 'queued',
+                reason: t('agentBusyUpdateQueued'),
+                blockedBy: blockedSessions(body),
+              }))
               setOperationsOpen(true)
               return
             }
@@ -3328,7 +3355,11 @@ export function MarketSection(props: MarketSectionProps) {
       .then(res => res.json().then(body => ({ status: res.status, body })))
       .then(({ status, body }) => {
         if (status === 409 && body.agentsBusy === true) {
-          setRecords(list => patchRecord(list, uninstallRecordId, { state: 'queued', reason: t('agentBusyUninstallQueued') }))
+          setRecords(list => patchRecord(list, uninstallRecordId, {
+            state: 'queued',
+            reason: t('agentBusyUninstallQueued'),
+            blockedBy: blockedSessions(body),
+          }))
           setOperationsOpen(true)
           return
         }
@@ -3453,10 +3484,27 @@ export function MarketSection(props: MarketSectionProps) {
 
   /** A queued record's "run now": retry immediately instead of waiting for idle. */
   const runQueuedNow = useCallback((record: OperationRecord) => {
+    // The host's guard will refuse this while anything is running, so asking
+    // produced a pixel-identical panel: the 409 handler re-queued the record
+    // and nothing else changed, which reads as a broken button (#752). Say
+    // what is in the way instead, and leave the row queued for the drain —
+    // that is the path which will actually run it.
+    const blockers = statusRef.current.runningAgents
+    if (blockers.length > 0) {
+      setInstallError(t('queuedRunBlocked').replace('{0}', String(blockers.length)))
+      setOperationsOpen(true)
+      return
+    }
     if (record.kind === 'install') {
       const plugin = data?.plugins.find(candidate => candidate.url === record.url)
       if (plugin === undefined) {
+        // The catalog no longer holds it — a refresh or a page change replaced
+        // `data`. Dropping the row silently was the same defect in miniature
+        // (#752): the entry disappears and the user is left without an entry
+        // or a reason. The way back is the catalog, so point at it.
         setRecords(prev => drop(prev, record.id))
+        setInstallError(t('queuedInstallGone'))
+        setOperationsOpen(true)
         return
       }
       setRecords(prev => drop(prev, record.id))
@@ -3468,7 +3516,7 @@ export function MarketSection(props: MarketSectionProps) {
       setRecords(prev => drop(prev, record.id))
       void doUninstall(record.name)
     }
-  }, [data, doInstall, doUpdate, doUninstall])
+  }, [data, doInstall, doUpdate, doUninstall, t])
 
   /** Live enable/disable of one installed plugin (#60). `reload` opts the
    * card-level theme flow into a page refresh so the visual result lands

@@ -1324,6 +1324,97 @@ describe('MarketSection (jsdom)', () => {
     expect(screen.queryByText(en.opBlockedCard)).toBeNull()
   })
 
+  it('says what is holding a queued row, and does not claim to be installing (#752)', async () => {
+    // The row said only "Queued · ahead: N", which reads as an operation that
+    // is merely last in line — and the entry above it said "Installing 0/1",
+    // a contradiction the reader cannot resolve: nothing is installing, and
+    // the guard will not let it start until the running work ends.
+    stubFetch({
+      '/dsh-market/install': {
+        ok: false,
+        agentsBusy: true,
+        runningAgents: ['session-a', 'session-b', 'session-c'],
+        error: 'agents are running',
+        __status: 409,
+      },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    const installButtons = screen.getAllByRole('button', { name: en.install })
+    fireEvent.click(installButtons[0]!)
+    fireEvent.click(await screen.findByRole('button', { name: en.confirmInstall }))
+    await waitFor(() => {
+      const panel = document.querySelector('[class*="opPanel"]')
+      expect(panel, 'the Tasks panel did not open').toBeTruthy()
+      // The blocker, with the count the host named…
+      expect(panel!.textContent).toContain(en.opQueuedWaitingAgents.replace('{0}', '3'))
+      // …and the batch line names the wait instead of "Installing 0/1".
+      expect(panel!.textContent).toContain(en.opWaitingAgents.replace('{0}', '1'))
+      expect(panel!.textContent).not.toContain(`${en.opInstalling} 0/`)
+      expect(panel!.textContent).toContain(en.opLeaveHintAgents)
+    })
+  })
+
+  it('answers "run now" with what is in the way instead of doing nothing (#752)', async () => {
+    // Sending it anyway came back 409, the handler re-queued the record, and
+    // the panel was pixel-identical before and after: the one button on that
+    // row read as broken. The guard is a thing we can see, so the click says
+    // so — and the row stays queued for the drain that will really run it.
+    const fetchMock = vi.fn((input: unknown, init?: RequestInit) => {
+      const path = String(input).split('?')[0]
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (path === '/dsh-market/registry') {
+        return Promise.resolve(new Response(JSON.stringify({ source: 'live', registry: REGISTRY }), { status: 200 }))
+      }
+      if (path === '/dsh-market/installed') {
+        return Promise.resolve(new Response(JSON.stringify({ profile: 'web', installed: {}, live: [] }), { status: 200 }))
+      }
+      if (path === '/dsh-market/updates') {
+        return Promise.resolve(new Response(JSON.stringify({ updates: {} }), { status: 200 }))
+      }
+      if (path === '/dsh-market/status') {
+        return Promise.resolve(new Response(JSON.stringify({
+          active: false, busy: false, pnpm: true, boot: 'boot-1', restart: true, installed: {},
+          runningAgents: ['session-a', 'session-b'],
+        }), { status: 200 }))
+      }
+      if (path === '/dsh-market/install' && method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({
+          ok: false, agentsBusy: true, runningAgents: ['session-a', 'session-b'], error: 'agents are running',
+        }), { status: 409 }))
+      }
+      return Promise.reject(new Error(`unstubbed fetch: ${String(input)}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      localStorage.clear()
+      render(<MarketSection {...props()} />)
+      await screen.findByText('dsh-loop')
+      const installButtons = screen.getAllByRole('button', { name: en.install })
+      fireEvent.click(installButtons[0]!)
+      fireEvent.click(await screen.findByRole('button', { name: en.confirmInstall }))
+      const runNow = await screen.findByRole('button', { name: en.opRunNow })
+      const before = fetchMock.mock.calls.filter(([url, init]) =>
+        String(url).endsWith('/dsh-market/install') && (init?.method ?? 'GET').toUpperCase() === 'POST',
+      ).length
+
+      fireEvent.click(runNow)
+
+      // It says what is in the way, naming how many sessions…
+      const banner = await screen.findByText(en.queuedRunBlocked.replace('{0}', '2'))
+      expect(banner).toBeTruthy()
+      // …and it does not pretend to try: no second POST, and the row is still
+      // queued (the drain owns it, and will run it when they go idle).
+      const after = fetchMock.mock.calls.filter(([url, init]) =>
+        String(url).endsWith('/dsh-market/install') && (init?.method ?? 'GET').toUpperCase() === 'POST',
+      ).length
+      expect(after).toBe(before)
+      expect(document.querySelector('[class*="opPanel"]')!.textContent).toContain(en.opQueued)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('drains a queued install once agents go idle', async () => {
     // NOTE: no fake timers here — the drain fires on a real 2s interval and
     // the install POST resolves on the microtask queue. Fake timers freeze

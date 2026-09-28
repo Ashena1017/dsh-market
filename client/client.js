@@ -331,6 +331,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			agentBusyQueued: "Agent 正忙，已排队，空闲后自动安装（可在右上角「任务」里取消）。",
 			agentBusyUpdateQueued: "Agent 正忙，已排队，空闲后自动更新（可在右上角「任务」里取消）。",
 			agentBusyUninstallQueued: "Agent 正忙，已排队，空闲后自动卸载（可在右上角「任务」里取消）。",
+			queuedRunBlocked: "有 {0} 个会话正在运行，现在还不能执行：这类操作会直接替换插件文件，运行中的 Agent 可能中途报错。它们空闲后会自动开始（也可以先在「任务」里取消这一条）。",
+			queuedInstallGone: "这一条要装的插件在当前目录里找不到了（目录刷新过或换了页），已从队列移除。请在目录里重新找到它再装一次。",
 			agentQueueStaleGone: "排队时它还在已安装列表里，现在已不在，因此跳过（没有卸载）。",
 			agentQueueStaleNoUpdate: "排队时它有可用更新，现在没有了，已跳过。",
 			queuedBadge: "排队中",
@@ -438,11 +440,14 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			opNeedsYou: "项需处理",
 			opQueued: "排队中",
 			opQueuedAhead: "前面还有",
+			opQueuedWaitingAgents: "等待 {0} 个会话空闲",
+			opWaitingAgents: "{0} 个任务等待 agent 空闲",
 			opRunning: "正在处理",
 			opNeedsChoice: "无法安装 · 已自动撤销，未改动任何插件",
 			opDone: "已完成",
 			opDoneRefresh: "已安装 · 刷新页面后生效",
 			opLeaveHint: "可离开本页面，完成后将通知你",
+			opLeaveHintAgents: "Agent 空闲后自动开始",
 			opEmpty: "暂无进行中的操作",
 			opEmptyHint: "安装、更新与卸载的进度将显示在这里",
 			opClose: "收起",
@@ -989,6 +994,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			agentBusyQueued: "Agent is busy — queued and will install automatically when idle (cancel it in Tasks, top right).",
 			agentBusyUpdateQueued: "Agent is busy — queued and will update automatically when idle (cancel it in Tasks, top right).",
 			agentBusyUninstallQueued: "Agent is busy — queued and will uninstall automatically when idle (cancel it in Tasks, top right).",
+			queuedRunBlocked: "{0} session(s) are running, so this cannot start yet: these operations replace plugin files in place, and a working agent can fail mid-turn. It will begin on its own once they go idle (or cancel this entry in Tasks).",
+			queuedInstallGone: "The plugin this entry was going to install is no longer in the catalog (it was refreshed or you changed pages), so the entry was removed. Find it in the catalog and install it again.",
 			agentQueueStaleGone: "It was installed when you queued this, and is not now — skipped, nothing was uninstalled.",
 			agentQueueStaleNoUpdate: "It had an update available when you queued this, and does not now — skipped.",
 			queuedBadge: "Queued",
@@ -1096,11 +1103,14 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			opNeedsYou: "need attention",
 			opQueued: "Queued",
 			opQueuedAhead: "ahead:",
+			opQueuedWaitingAgents: "waiting for {0} running session(s)",
+			opWaitingAgents: "{0} task(s) waiting for agents to go idle",
 			opRunning: "In progress",
 			opNeedsChoice: "Cannot install · reverted automatically, nothing changed",
 			opDone: "Done",
 			opDoneRefresh: "Installed · refresh the page to apply",
 			opLeaveHint: "You can leave this page; you will be notified when it finishes",
+			opLeaveHintAgents: "Starts on its own once the agents go idle",
 			opEmpty: "No operations in progress",
 			opEmptyHint: "Install, update and uninstall progress appears here",
 			opClose: "Collapse",
@@ -3637,15 +3647,19 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 		function summarize(list) {
 			let running = 0;
 			let queued = 0;
+			let blocked = 0;
 			let attention = 0;
 			let settled = 0;
 			for (const record of list) if (record.state === "running") running += 1;
-			else if (record.state === "queued") queued += 1;
-			else if (needsUser(record)) attention += 1;
+			else if (record.state === "queued") {
+				queued += 1;
+				if ((record.blockedBy?.length ?? 0) > 0) blocked += 1;
+			} else if (needsUser(record)) attention += 1;
 			else settled += 1;
 			return {
 				running,
 				queued,
+				blocked,
 				attention,
 				settled,
 				total: running + queued + settled,
@@ -3848,7 +3862,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 		/** The one-line status under a record's name; the bucket carries the rest. */
 		function statusLine(t, lang, record, ahead) {
 			switch (record.state) {
-				case "queued": return ahead === null || ahead === 0 ? t("opQueued") : `${t("opQueued")} · ${t("opQueuedAhead")} ${String(ahead)}`;
+				case "queued": {
+					const blockers = record.blockedBy?.length ?? 0;
+					if (blockers > 0) return `${t("opQueued")} · ${t("opQueuedWaitingAgents").replace("{0}", String(blockers))}`;
+					return ahead === null || ahead === 0 ? t("opQueued") : `${t("opQueued")} · ${t("opQueuedAhead")} ${String(ahead)}`;
+				}
 				case "running": return record.detail ?? t("opRunning");
 				case "input": return t("opNeedsChoice");
 				case "failed": return record.reason !== void 0 ? localizeBilingual(record.reason, lang) : t("installFail");
@@ -3878,7 +3896,9 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					document.removeEventListener("mousedown", onPointer);
 				};
 			}, [open, setOpen]);
-			const label = busy ? `${t("opInstalling")} ${String(summary.progressed)}/${String(summary.total)}` : summary.attention > 0 ? `${String(summary.attention)} ${t("opNeedsYou")}` : t("opTitle");
+			const waitingOnAgents = summary.running === 0 && summary.blocked > 0;
+			const batchLabel = waitingOnAgents ? t("opWaitingAgents").replace("{0}", String(summary.blocked)) : `${t("opInstalling")} ${String(summary.progressed)}/${String(summary.total)}`;
+			const label = busy ? batchLabel : summary.attention > 0 ? `${String(summary.attention)} ${t("opNeedsYou")}` : t("opTitle");
 			const quiet = records.length === 0 && !open;
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: Market_module_css_default.opWrap,
@@ -3929,15 +3949,9 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							children: [
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 									className: Market_module_css_default.opAggregateTop,
-									children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
-										t("opInstalling"),
-										" ",
-										summary.progressed,
-										"/",
-										summary.total
-									] })
+									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: batchLabel })
 								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								!waitingOnAgents && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 									className: Market_module_css_default.bar,
 									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 										className: Market_module_css_default.barFill,
@@ -3946,7 +3960,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 								}),
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 									className: Market_module_css_default.opAggregateHint,
-									children: t("opLeaveHint")
+									children: waitingOnAgents ? t("opLeaveHintAgents") : t("opLeaveHint")
 								})
 							]
 						}),
@@ -7314,6 +7328,21 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				label: "timeYear"
 			}
 		];
+		/**
+		* The sessions a host 409 named as blocking (#752).
+		*
+		* The agent guard refuses before it touches pnpm and answers with the sessions
+		* that are running. Keeping them on the record is what lets a queued row say
+		* WHY it is not moving: a queue entry with no reason reads as an operation
+		* that is merely last in line, and "it never starts" is what the user reports.
+		*
+		* @returns the session names, or undefined when the host named none.
+		*/
+		function blockedSessions(body) {
+			if (!Array.isArray(body.runningAgents)) return void 0;
+			const names = body.runningAgents.map(String).filter((name) => name !== "");
+			return names.length === 0 ? void 0 : names;
+		}
 		function MarketSection(props) {
 			const t = props.t;
 			const initialWebdav = (0, react.useMemo)(savedWebdav, []);
@@ -8512,7 +8541,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							if (body.agentsBusy === true) {
 								setRecords((list) => patch(list, recordId, {
 									state: "queued",
-									reason: t("agentBusyQueued")
+									reason: t("agentBusyQueued"),
+									blockedBy: blockedSessions(body)
 								}));
 								setOperationsOpen(true);
 								return;
@@ -8842,7 +8872,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							if (body.agentsBusy === true) {
 								setRecords((list) => patch(list, updateRecordId, {
 									state: "queued",
-									reason: t("agentBusyUpdateQueued")
+									reason: t("agentBusyUpdateQueued"),
+									blockedBy: blockedSessions(body)
 								}));
 								setOperationsOpen(true);
 								return;
@@ -9232,7 +9263,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					if (status === 409 && body.agentsBusy === true) {
 						setRecords((list) => patch(list, uninstallRecordId, {
 							state: "queued",
-							reason: t("agentBusyUninstallQueued")
+							reason: t("agentBusyUninstallQueued"),
+							blockedBy: blockedSessions(body)
 						}));
 						setOperationsOpen(true);
 						return;
@@ -9335,10 +9367,18 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			}, []);
 			/** A queued record's "run now": retry immediately instead of waiting for idle. */
 			const runQueuedNow = (0, react.useCallback)((record) => {
+				const blockers = statusRef.current.runningAgents;
+				if (blockers.length > 0) {
+					setInstallError(t("queuedRunBlocked").replace("{0}", String(blockers.length)));
+					setOperationsOpen(true);
+					return;
+				}
 				if (record.kind === "install") {
 					const plugin = data?.plugins.find((candidate) => candidate.url === record.url);
 					if (plugin === void 0) {
 						setRecords((prev) => drop(prev, record.id));
+						setInstallError(t("queuedInstallGone"));
+						setOperationsOpen(true);
 						return;
 					}
 					setRecords((prev) => drop(prev, record.id));
@@ -9354,7 +9394,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				data,
 				doInstall,
 				doUpdate,
-				doUninstall
+				doUninstall,
+				t
 			]);
 			/** Live enable/disable of one installed plugin (#60). `reload` opts the
 			* card-level theme flow into a page refresh so the visual result lands
