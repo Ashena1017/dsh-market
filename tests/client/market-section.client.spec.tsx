@@ -48,12 +48,13 @@ function stubFetch(overrides: Record<string, unknown> = {}, mountPath = '') {
             status: 'unknown', basis: 'undeclared', requirement: null, declarations: [],
           }])),
         }
-      : route === '/dsh-market/installed' ? { profile: 'web', installed: {}, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [] }
+      : route === '/dsh-market/installed' ? { profile: 'web', installed: {}, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [], blocked: [] }
       : route === '/dsh-market/status' ? { active: false, pnpm: true, boot: 'boot-1', restart: true, installed: {} }
       : route === '/dsh-market/updates' ? { updates: {} }
       : route === '/dsh-market/toggle' ? { ok: true, disabled: [], live: [], activation: {} }
       : route === '/dsh-market/groups' ? { ok: true, groups: {}, groupOrder: [], disabled: [] }
       : route === '/dsh-market/favorite' ? { ok: true, favorites: [] }
+      : route === '/dsh-market/block' ? { ok: true, blocked: [] }
       : null
     const merged = overrides[path] ?? overrides[route] ?? payload
     if (merged === null) return Promise.reject(new Error(`unstubbed fetch: ${String(input)}`))
@@ -73,6 +74,12 @@ const LOCALE_SNAPSHOT = { active: 'en' }
 
 /** Escape a locale string so it can be used inside a RegExp literal. */
 const re = (s: string) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+
+/** Installed-card uninstall lives in the card menu. The confirm dialog is still a button. */
+async function openCardUninstall() {
+  fireEvent.click((await screen.findAllByRole('button', { name: en.groupMore }))[0]!)
+  fireEvent.click(await screen.findByRole('menuitem', { name: en.uninstall }))
+}
 
 function props() {
   return {
@@ -2091,11 +2098,9 @@ describe('refresh banner falls back when the change is undone (#340)', () => {
     await waitFor(() => expect(screen.getAllByText(re(en.refreshBanner)).length).toBe(1))
 
     fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
-    fireEvent.click((await screen.findAllByRole('button', { name: en.uninstall }))[0]!)
+    await openCardUninstall()
     await screen.findByText(re(en.uninstallConfirmDesc))
-    // The modal's confirm carries the same label as the row's trigger, so it
-    // is the LAST one on screen once the dialog is open.
-    fireEvent.click(screen.getAllByRole('button', { name: en.uninstall }).at(-1)!)
+    fireEvent.click(screen.getByRole('button', { name: en.uninstall }))
 
     await waitFor(() => expect(screen.queryAllByText(re(en.refreshBanner))).toHaveLength(0))
   })
@@ -2129,9 +2134,9 @@ describe('refresh banner falls back when the change is undone (#340)', () => {
     await waitFor(() => expect(screen.getAllByText(re(en.refreshBanner)).length).toBe(1))
 
     fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
-    fireEvent.click((await screen.findAllByRole('button', { name: en.uninstall }))[0]!)
+    await openCardUninstall()
     await screen.findByText(re(en.uninstallConfirmDesc))
-    fireEvent.click(screen.getAllByRole('button', { name: en.uninstall }).at(-1)!)
+    fireEvent.click(screen.getByRole('button', { name: en.uninstall }))
 
     await waitFor(() => expect(screen.queryAllByText(re(en.refreshBanner))).toHaveLength(0))
   })
@@ -2150,9 +2155,9 @@ describe('refresh banner falls back when the change is undone (#340)', () => {
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-loop')
     fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
-    fireEvent.click((await screen.findAllByRole('button', { name: en.uninstall }))[0]!)
+    await openCardUninstall()
     await screen.findByText(re(en.uninstallConfirmDesc))
-    fireEvent.click(screen.getAllByRole('button', { name: en.uninstall }).at(-1)!)
+    fireEvent.click(screen.getByRole('button', { name: en.uninstall }))
 
     await waitFor(() => expect(screen.getAllByText(re(en.refreshBanner)).length).toBe(1))
     // Not two. A restart banner here would be the "为啥有三个状态横幅啊" shape.
@@ -2173,9 +2178,9 @@ describe('refresh banner falls back when the change is undone (#340)', () => {
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-loop')
     fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
-    fireEvent.click((await screen.findAllByRole('button', { name: en.uninstall }))[0]!)
+    await openCardUninstall()
     await screen.findByText(re(en.uninstallConfirmDesc))
-    fireEvent.click(screen.getAllByRole('button', { name: en.uninstall }).at(-1)!)
+    fireEvent.click(screen.getByRole('button', { name: en.uninstall }))
 
     await waitFor(() => expect(screen.getAllByText(re(en.restartBanner)).length).toBe(1))
     expect(screen.queryAllByText(re(en.refreshBanner)).length).toBe(0)
@@ -2361,6 +2366,138 @@ describe('favorites (#414)', () => {
     fireEvent.click(screen.getByRole('button', { name: re(en.tabFavorites) }))
     expect(await screen.findByText(en.favoritesStaleEmpty)).toBeTruthy()
     expect(screen.getByRole('button', { name: en.favoritesClearStale })).toBeTruthy()
+  })
+})
+
+describe('blocked plugins (#657)', () => {
+  function blockedStub(initial: string[] = []) {
+    const state = { blocked: [...initial] }
+    stubFetch({
+      '/dsh-market/installed': () => ({
+        profile: 'web', installed: {}, live: [], disabled: [], groups: {}, groupOrder: [],
+        favorites: [], blocked: [...state.blocked],
+      }),
+      '/dsh-market/block': (body: any) => {
+        const name = String(body.name)
+        if (body.blocked === true) {
+          if (!state.blocked.includes(name)) state.blocked.push(name)
+        } else {
+          state.blocked = state.blocked.filter(entry => entry !== name)
+        }
+        return { ok: true, blocked: [...state.blocked] }
+      },
+    })
+    return state
+  }
+
+  it('hides a plugin from Discover via the card menu, and says where to undo it', async () => {
+    blockedStub()
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    const card = screen.getByText('Loop task runner').closest('[class*="card"]') as HTMLElement
+    expect(within(card).queryByRole('button', { name: en.blockAdd })).toBeNull()
+    fireEvent.click(within(card).getByRole('button', { name: en.groupMore }))
+    fireEvent.click(screen.getByRole('menuitem', { name: en.blockAdd }))
+    await waitFor(() => {
+      const call = fetchCalls.find(c => c.path === '/dsh-market/block')
+      expect(call?.body).toEqual({ name: 'dsh-loop', blocked: true })
+    })
+    await waitFor(() => expect(screen.queryByText('Loop task runner')).toBeNull())
+    expect(await screen.findByText(en.blockMoved)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: en.tabBlocked + ' (1)' }))
+    const hidden = (await screen.findByText('Loop task runner')).closest('[class*="card"]') as HTMLElement
+    fireEvent.click(within(hidden).getByRole('button', { name: en.groupMore }))
+    fireEvent.click(screen.getByRole('menuitem', { name: en.blockRemove }))
+    await waitFor(() => expect(screen.getByText(en.blockedEmpty)).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: en.tabDiscover }))
+    expect(await screen.findByText('Loop task runner')).toBeTruthy()
+  })
+
+  it('skips a hidden plugin from Update all, and still offers it on its own row', async () => {
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web',
+        installed: { 'dsh-loop': '^1.0.0', 'dsh-notify': '^1.0.0', 'dsh-third': '^1.0.0' },
+        live: [],
+        disabled: [],
+        blocked: ['dsh-third'],
+      },
+      '/dsh-market/updates': {
+        updates: {
+          'dsh-loop': { kind: 'npm', version: '1.0.0', latest: '1.1.0', updateAvailable: true },
+          'dsh-notify': { kind: 'npm', version: '1.0.0', latest: '1.1.0', updateAvailable: true },
+          'dsh-third': { kind: 'npm', version: '1.0.0', latest: '1.1.0', updateAvailable: true },
+        },
+      },
+      '/dsh-market/update': { ok: true },
+    })
+    render(<MarketSection {...props()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Update all \(2\)/ }))
+    await waitFor(() => {
+      expect(fetchCalls.filter(call => call.path === '/dsh-market/update')).toHaveLength(2)
+    })
+    expect(fetchCalls.filter(call => call.path === '/dsh-market/update').map(call => call.body?.name).sort())
+      .toEqual(['dsh-loop', 'dsh-notify'])
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    let row: HTMLElement | null = await screen.findByText('dsh-third')
+    while (row !== null && within(row).queryByRole('button', { name: en.update }) === null) row = row.parentElement
+    expect(within(row!).getByRole('button', { name: en.update })).toBeTruthy()
+  })
+
+  it('treats a linked checkout and its catalog package name as one block', async () => {
+    const fork = {
+      name: 'loop-repo', owner: 'alice', url: 'https://github.com/alice/loop-repo', category: 'tools',
+      npm: 'dsh-loop-pkg', stars: 1, added: '2026-08-01', description: { en: 'Forked loop', zh: '分叉循环' }, install: '',
+    }
+    const state = { blocked: ['dsh-loop-pkg'] }
+    stubFetch({
+      '/dsh-market/registry': {
+        source: 'live',
+        registry: { ...REGISTRY, plugins: [...REGISTRY.plugins, fork] },
+      },
+      '/dsh-market/installed': () => ({
+        profile: 'web',
+        installed: { 'my-loop': 'link:../my-loop', 'dsh-notify': '^1.0.0' },
+        live: [],
+        disabled: [],
+        blocked: [...state.blocked],
+        repoIdentities: { 'my-loop': ['alice/loop-repo'] },
+      }),
+      '/dsh-market/updates': {
+        updates: {
+          'my-loop': { kind: 'linked', version: '1.0.0', latest: '1.1.0', updateAvailable: true },
+          'dsh-notify': { kind: 'npm', version: '1.0.0', latest: '1.1.0', updateAvailable: true },
+        },
+      },
+      '/dsh-market/block': (body: any) => {
+        const name = String(body.name)
+        if (body.blocked === true) {
+          if (!state.blocked.includes(name)) state.blocked.push(name)
+        } else {
+          state.blocked = state.blocked.filter(entry => entry !== name)
+        }
+        return { ok: true, blocked: [...state.blocked] }
+      },
+      '/dsh-market/update': { ok: true },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    expect(screen.queryByText('Forked loop')).toBeNull()
+    fireEvent.change(screen.getByPlaceholderText(en.searchPh), { target: { value: 'Forked loop' } })
+    expect(await screen.findByText(en.blockedFilteredEmpty)).toBeTruthy()
+    fireEvent.click(await screen.findByRole('button', { name: /Update all \(1\)/ }))
+    await waitFor(() => {
+      expect(fetchCalls.filter(call => call.path === '/dsh-market/update').map(call => call.body?.name)).toEqual(['dsh-notify'])
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    let row: HTMLElement | null = await screen.findByText('my-loop')
+    while (row !== null && within(row).queryByRole('button', { name: en.groupMore }) === null) row = row.parentElement
+    fireEvent.click(within(row!).getByRole('button', { name: en.groupMore }))
+    fireEvent.click(screen.getByRole('menuitem', { name: en.blockRemove }))
+    await waitFor(() => {
+      const call = fetchCalls.find(c => c.path === '/dsh-market/block')
+      expect(call?.body).toEqual({ name: 'dsh-loop-pkg', blocked: false })
+    })
   })
 })
 
@@ -2903,7 +3040,7 @@ describe('uninstall confirmation Modal', () => {
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-loop')
     fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
-    fireEvent.click(await screen.findByRole('button', { name: en.uninstall }))
+    await openCardUninstall()
     // Modal opens with the confirmation copy.
     expect(await screen.findByText(re(en.uninstallConfirmDesc))).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: en.cancel }))
@@ -2916,7 +3053,7 @@ describe('uninstall confirmation Modal', () => {
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-loop')
     fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
-    fireEvent.click(await screen.findByRole('button', { name: en.uninstall }))
+    await openCardUninstall()
     const dialog = await screen.findByRole('dialog', { name: re(en.uninstall + ' dsh-loop?') })
     fireEvent.click(within(dialog).getByRole('button', { name: en.uninstall }))
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === '/dsh-market/uninstall')).toBe(true))
@@ -3330,7 +3467,8 @@ describe('local-dev restore', () => {
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-loop')
     fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
-    expect(await screen.findByRole('button', { name: en.uninstall })).toBeTruthy()
+    fireEvent.click((await screen.findAllByRole('button', { name: en.groupMore }))[0]!)
+    expect(await screen.findByRole('menuitem', { name: en.uninstall })).toBeTruthy()
     expect(await screen.findByText(en.linkedDev)).toBeTruthy()
     expect(screen.getByRole('status', { name: en.linkedDev })).toBeTruthy()
     const restoreBtn = await screen.findByRole('button', { name: en.restore })
@@ -3383,7 +3521,8 @@ describe('local-dev restore', () => {
     expect(fetchCalls.some(call => call.path === '/dsh-market/update')).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: en.gotIt }))
     expect(screen.queryByText(en.restoreNoCatalog)).toBeNull()
-    expect(screen.getByRole('button', { name: en.uninstall })).toBeTruthy()
+    fireEvent.click(screen.getAllByRole('button', { name: en.groupMore })[0]!)
+    expect(screen.getByRole('menuitem', { name: en.uninstall })).toBeTruthy()
   })
 
   it('does not offer restore when the linked fork disagrees with the only same-named catalog entry', async () => {
@@ -3454,7 +3593,8 @@ describe('local-dev restore', () => {
     expect(await screen.findByRole('button', { name: en.restore })).toBeTruthy()
     expect(screen.getByRole('button', { name: en.viewReplacement })).toBeTruthy()
     expect(screen.getByRole('button', { name: en.installReplacement })).toBeTruthy()
-    expect(screen.getByRole('button', { name: en.uninstall })).toBeTruthy()
+    fireEvent.click(screen.getAllByRole('button', { name: en.groupMore })[0]!)
+    expect(screen.getByRole('menuitem', { name: en.uninstall })).toBeTruthy()
   })
 
   /** #314: the failure is read in the operations panel, and the way out was a

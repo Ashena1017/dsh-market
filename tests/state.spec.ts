@@ -112,11 +112,52 @@ describe('market state.json (#60)', () => {
     }
   })
 
+  /** #657. Same optional-field contract as notes/favorites: a caller that
+   * never heard of blocked must not erase a list the user already has. */
+  it('a partial write keeps blocked names that the caller never mentioned', () => {
+    const dir = stateDir()
+    try {
+      writeMarketState(dir, {
+        disabled: new Set(), groups: {}, groupOrder: [],
+        blocked: ['dsh-loop', 'dsh-notify'],
+      })
+      expect(readMarketState(dir).blocked).toEqual(['dsh-loop', 'dsh-notify'])
+
+      writeMarketState(dir, { disabled: new Set(['a']), groups: {}, groupOrder: [] })
+      expect(readMarketState(dir).blocked).toEqual(['dsh-loop', 'dsh-notify'])
+
+      writeMarketState(dir, { disabled: new Set(), groups: {}, groupOrder: [], blocked: [] })
+      expect(readMarketState(dir).blocked).toEqual([])
+      expect('blocked' in readRaw(dir)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('persists blocked package names and drops junk on read', () => {
+    const dir = stateDir()
+    try {
+      writeMarketState(dir, {
+        disabled: new Set(), groups: {}, groupOrder: [],
+        blocked: ['dsh-loop', 'dsh-loop', '', 'dsh-notify'],
+      })
+      expect(readMarketState(dir).blocked).toEqual(['dsh-loop', 'dsh-notify'])
+      expect('blocked' in readRaw(dir)).toBe(true)
+
+      writeFileSync(join(dir, '.dsh-market', 'state.json'), JSON.stringify({
+        blocked: ['ok', 7, null, 'ok', ''],
+      }))
+      expect(readMarketState(dir).blocked).toEqual(['ok'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('readMarketState normalizes malformed payloads to empty state', () => {
     const dir = stateDir()
     try {
       writeFileSync(join(dir, '.dsh-market', 'state.json'), 'not json')
-      expect(readMarketState(dir)).toEqual({ disabled: new Set(), groups: {}, groupOrder: [], notes: {}, favorites: [] })
+      expect(readMarketState(dir)).toEqual({ disabled: new Set(), groups: {}, groupOrder: [], notes: {}, favorites: [], blocked: [] })
       writeFileSync(join(dir, '.dsh-market', 'state.json'), JSON.stringify({
         disabled: ['a', 'a', '', 7],
         groups: { work: ['x', 'x', 3] },
