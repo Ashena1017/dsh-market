@@ -738,8 +738,13 @@ describe('MarketSection (jsdom)', () => {
     expect(dialogBlurb).toBeTruthy()
     expect(dialogBlurb!.classList.contains(css.desc)).toBe(false)
 
-    const published = screen.getByText(/2026-08-01/)
-    expect(published.getAttribute('title')).toBe(en.published)
+    const body = document.getElementsByClassName(css.confirmBody)[0] as HTMLElement
+    const byline = body.getElementsByClassName(css.byline)[0] as HTMLElement
+    expect(byline.textContent).toContain('alice')
+    expect(byline.textContent).toContain('v1.2.3')
+    expect(byline.textContent).toContain('162.5k')
+    expect(byline.textContent).toContain('2026-08-01')
+    expect(screen.getByTitle(en.published).textContent).toContain('2026-08-01')
     expect(screen.queryByText(`${en.published} 2026-08-01`)).toBeNull()
 
     expect(screen.queryByText(/Not lifetime downloads/)).toBeNull()
@@ -748,7 +753,37 @@ describe('MarketSection (jsdom)', () => {
     expect(marks.every(el => el.tabIndex === 0)).toBe(true)
 
     expect(document.getElementsByClassName(css.confirmFold).length).toBe(1)
+    expect(body.getElementsByClassName(css.confirmPanel).length).toBe(2)
+    expect(screen.queryByText(en.installCaution)).toBeNull()
     expect(screen.getAllByText('Tools').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('shows Before you install only when the plugin is a terminal one (#739)', async () => {
+    stubFetch({
+      '/dsh-market/registry': {
+        source: 'live',
+        hostVersion: '0.1.2-alpha.2',
+        registry: {
+          ...REGISTRY,
+          count: 1,
+          plugins: [{
+            name: 'dsh-tui', owner: 'alice', url: 'https://github.com/alice/dsh-tui',
+            category: 'tools', npm: null, stars: 1, added: '2026-08-01',
+            description: { en: 'A terminal UI', zh: '终端界面' }, install: 'dsh plugin install dsh-tui',
+          }],
+        },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-tui')
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    expect(await screen.findByText(en.installCaution)).toBeTruthy()
+    expect(screen.getByText(en.terminalCautionTitle)).toBeTruthy()
+    const link = screen.getByRole('link', { name: en.terminalCautionLink })
+    expect(link.getAttribute('href')).toBe('https://github.com/alice/dsh-tui#readme')
+    const foot = link.closest(`.${css.installCautionFoot}`)
+    expect(foot).toBeTruthy()
+    expect(foot?.textContent).toContain(en.terminalCautionStartup)
   })
 
   it('offers the release a hold kept back, and installs it when asked (#635)', async () => {
@@ -4122,8 +4157,10 @@ describe('capability disclosure (#401)', () => {
     expect(dialog.getByText(en.capShell)).toBeTruthy()
     expect(dialog.getByText(en.capFsWrite)).toBeTruthy()
     expect(dialog.getByText(en.capRedCredentialsNetwork)).toBeTruthy()
-    expect(dialog.getByText(en.capabilityNote)).toBeTruthy()
-    expect(dialog.getByText(en.capabilityScannedAt.replace('{0}', '2026-09-24'))).toBeTruthy()
+    const caveat = dialog.getByText((_, node) => node?.tagName === 'P'
+      && (node.textContent ?? '').includes(en.capabilityNote)
+      && (node.textContent ?? '').includes(en.capabilityScannedAt.replace('{0}', '2026-09-24')))
+    expect(caveat.getElementsByClassName(css.capCaveatAt)[0]?.textContent).toBe(en.capabilityScannedAt.replace('{0}', '2026-09-24'))
     // Disclosure, never verdict.
     expect(dialog.queryByText(/^safe$/i)).toBeNull()
   })

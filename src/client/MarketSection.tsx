@@ -23,7 +23,6 @@ import {
   IconChevronRightOutline14,
   IconChevronUpOutline14,
   IconCheckOutline16,
-  IconCodeOutline16,
   IconCordisPluginOutline14,
   IconDownloadOutline16,
   IconFolderOpen16,
@@ -1134,6 +1133,47 @@ function DownloadCount({ plugin, t }: { plugin: RegistryPlugin; t: Translate }) 
         {'· ↓ ' + formatCount(plugin.downloads!) + ' / ' + t('downloadsPeriod')}
       </span>
     </Tooltip>
+  )
+}
+
+/** Design-spec terminal mark for the install-command fold: dark rounded
+ * square with a light `>_` prompt. Host ui-primitives has no matching glyph. */
+function ConfirmTerminalIcon() {
+  return (
+    <svg className={css.confirmTerminalIcon} viewBox="0 0 16 16" width={16} height={16} aria-hidden="true" focusable="false">
+      <rect width="16" height="16" rx="3.5" fill="currentColor" />
+      <path
+        d="M4.25 5.25 L7.25 8 L4.25 10.75 M8.25 10.75 H12"
+        fill="none"
+        stroke="#fff"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+/** Install-dialog fold (#739). A gray block, not an outlined frame: the icon
+ * stays on the left and the chevron stays on the right, open or closed. */
+function ConfirmFold({ icon, title, open, onToggle, children }: {
+  icon: ReactNode
+  title: string
+  open: boolean
+  onToggle: () => void
+  children: ReactNode
+}) {
+  return (
+    <div className={css.confirmPanel}>
+      <button type="button" className={css.confirmPanelRow} aria-expanded={open} onClick={onToggle}>
+        <span className={css.confirmPanelIcon}>{icon}</span>
+        <span className={css.confirmPanelTitle}>{title}</span>
+        {open
+          ? <IconChevronUpOutline14 size={14} className={css.confirmPanelChevron} />
+          : <IconChevronRightOutline14 size={14} className={css.confirmPanelChevron} />}
+      </button>
+      {open && <div className={css.confirmPanelBody}>{children}</div>}
+    </div>
   )
 }
 
@@ -4244,12 +4284,10 @@ export function MarketSection(props: MarketSectionProps) {
             {' ' + redLineLabel(line)}
           </p>
         ))}
-        <DisclosureRow
+        <ConfirmFold
           icon={<IconQuestionOutline14 size={16} />}
           title={t('capabilityTitle')}
           open={capsOpen}
-          expandable
-          expandOnRowClick
           onToggle={() => setCapsOpen(o => !o)}
         >
           <div className={css.caps}>
@@ -4265,11 +4303,13 @@ export function MarketSection(props: MarketSectionProps) {
               <span key={line} className={css.capFact}>{redLineLabel(line)}</span>
             ))}
           </div>
-          <p className={css.capCaveat}>{t('capabilityNote')}</p>
-          {typeof p.capabilityCheckedAt === 'string' && p.capabilityCheckedAt.length > 0 && (
-            <p className={css.capCaveat}>{t('capabilityScannedAt').replace('{0}', p.capabilityCheckedAt.slice(0, 10))}</p>
-          )}
-        </DisclosureRow>
+          <p className={css.capCaveat}>
+            <span className={css.capCaveatNote}>{t('capabilityNote')}</span>
+            {typeof p.capabilityCheckedAt === 'string' && p.capabilityCheckedAt.length > 0 && (
+              <span className={css.capCaveatAt}>{t('capabilityScannedAt').replace('{0}', p.capabilityCheckedAt.slice(0, 10))}</span>
+            )}
+          </p>
+        </ConfirmFold>
       </>
     )
   }
@@ -6280,6 +6320,8 @@ export function MarketSection(props: MarketSectionProps) {
       {confirming !== null && (
         <Modal
           open
+          className={css.confirmModal}
+          contentClassName={css.confirmContent}
           onClose={() => { setConfirming(null); setCmdOpen(false) }}
           title={t('confirmTitle') + ' ' + confirming.name + '?'}
           footer={(
@@ -6302,14 +6344,10 @@ export function MarketSection(props: MarketSectionProps) {
             <CatalogVersionMark version={confirming.version} tip={catalogVersionTip} />
             <DownloadCount plugin={confirming} t={t} />
             {typeof confirming.stars === 'number' && (
-              <Tooltip label={String(confirming.stars)} side="top">
-                <span className={css.star}>{'· ★ ' + formatCount(confirming.stars)}</span>
-              </Tooltip>
+              <span className={css.star}>{'· ★ ' + formatCount(confirming.stars)}</span>
             )}
-            {/* The date left the card footer when that row got crowded; the
-                dialog is wide enough to keep it on the signature line (#739). */}
             {confirming.added && (
-              <span className={css.star} title={t('published')}>{'· ' + confirming.added}</span>
+              <span className={css.star} title={t('published')}>{`· ${confirming.added}`}</span>
             )}
           </div>
           {pluginCategories(confirming).length > 0 && (
@@ -6336,40 +6374,50 @@ export function MarketSection(props: MarketSectionProps) {
               fold rows sat in the same block as the blurb (#739). */}
           <div className={css.confirmFold}>
           {capabilityDetail(confirming)}
-          <DisclosureRow
-            icon={<IconCodeOutline16 size={16} />}
+          <ConfirmFold
+            icon={<ConfirmTerminalIcon />}
             title={t('cmdDetails')}
             open={cmdOpen}
-            expandable
-            expandOnRowClick
             onToggle={() => setCmdOpen(o => !o)}
           >
             <div className={css.cmd}>{confirming.install}</div>
-          </DisclosureRow>
+          </ConfirmFold>
           </div>
-          {looksTerminal(confirming, lang) && (
-            <p className={css.warnLine}>
-              <IconWarningOutline16 size={14} className={css.bannerIcon} />
-              {' ' + t('terminalWarn') + ' '}
-              <a className={css.src} href={confirming.url + '#readme'} target="_blank" rel="noreferrer">{t('readme')}</a>
-            </p>
+          {(looksTerminal(confirming, lang) || confirming.deprecated === true) && (
+            <div className={css.installCaution}>
+              <p className={css.installCautionLabel}>{t('installCaution')}</p>
+              {looksTerminal(confirming, lang) && (
+                <>
+                  <p className={css.installCautionHead}>
+                    <IconWarningOutline16 size={14} />
+                    {t('terminalCautionTitle')}
+                  </p>
+                  <p className={css.installCautionBody}>{t('terminalCautionBody')}</p>
+                  <p className={css.installCautionFoot}>
+                    <span>{t('terminalCautionStartup')}</span>
+                    <a className={css.installCautionLink} href={confirming.url + '#readme'} target="_blank" rel="noreferrer">{t('terminalCautionLink')}</a>
+                  </p>
+                </>
+              )}
+              {confirming.deprecated === true && (() => {
+                const replacement = replacementOf(confirming)
+                return (
+                  <p className={css.installCautionBody}>
+                    {t('deprecatedWarn')}
+                    {replacement !== undefined && (
+                      <>
+                        {' '}
+                        <a className={css.src} href={replacement.url} target="_blank" rel="noreferrer">
+                          {t('replacementHint') + ' ' + replacement.name}
+                        </a>
+                      </>
+                    )}
+                  </p>
+                )
+              })()}
+            </div>
           )}
-          {confirming.deprecated === true && (() => {
-            const replacement = replacementOf(confirming)
-            return (
-              <div className={css.deprecate}>
-                <div className={css.depLine}>
-                  <span>⚠️ {t('deprecatedWarn')}</span>
-                  {replacement !== undefined && (
-                    <a className={css.src} href={replacement.url} target="_blank" rel="noreferrer">
-                      {t('replacementHint') + ' ' + replacement.name}
-                    </a>
-                  )}
-                </div>
-              </div>
-            )
-          })()}
-          <p className={css.modalNote}><IconWarningOutline16 size={14} className={css.bannerIcon} />{' ' + t('confirmWarn')}</p>
+          <p className={css.confirmFineprint}>{t('confirmWarn')}</p>
           </div>
         </Modal>
       )}
