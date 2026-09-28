@@ -118,6 +118,68 @@ describe('verifyActivation (P0-2)', () => {
     expect(result.reasons.join(' ')).toMatch(/dsh\.bundle/)
   })
 
+  // #757: a plugin whose dsh peer range is capped below the running host is
+  // skipped by the host's own boot gate (evaluatePluginCompatibility in
+  // @deepseek-ai/dsh-app-boot) on EVERY boot. The bundle layer keeps
+  // declaring it, the loader never mounts it, and "restart to apply" was an
+  // infinite loop: restarting can never activate it. The market must predict
+  // the host's verdict with the host's own semantics — satisfiesRange with
+  // includePrerelease, @deepseek-ai/dsh and @deepseek-ai/dsh-* peers only —
+  // and say `blocked` instead of `restart`.
+  it('blocked when the host will skip the bundle on every boot — peer capped below the runtime (#757)', () => {
+    profile(['dsh-capped'])
+    pkg('dsh-capped', {
+      version: '0.5.1',
+      peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    const result = verifyActivation('web', 'dsh-capped', new Set(), undefined, false,
+      { runtimeVersion: '0.2.0', exemptions: {} })
+    expect(result).toMatchObject({ state: 'blocked', hot: false, bundle: true })
+    expect(result.reasons.join(' ')).toMatch(/0\.1\.0-rc\.6/)
+    expect(result.reasons.join(' ')).toMatch(/0\.2\.0/)
+  })
+
+  it('an exempted runtime version boots after all — restart, not blocked (#757)', () => {
+    profile(['dsh-capped'])
+    pkg('dsh-capped', {
+      version: '0.5.1',
+      peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    const result = verifyActivation('web', 'dsh-capped', new Set(), undefined, false,
+      { runtimeVersion: '0.2.0', exemptions: { 'dsh-capped@0.5.1': ['0.2.0'] } })
+    expect(result).toMatchObject({ state: 'restart', hot: false, bundle: true })
+  })
+
+  it('an open peer range never blocks — the host accepts it (#757)', () => {
+    profile(['dsh-open'])
+    pkg('dsh-open', {
+      version: '0.59.2',
+      peerDependencies: { '@deepseek-ai/dsh': '>=0.1.5-rc.1' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    const result = verifyActivation('web', 'dsh-open', new Set(), undefined, false,
+      { runtimeVersion: '0.2.0', exemptions: {} })
+    expect(result).toMatchObject({ state: 'restart', hot: false, bundle: true })
+  })
+
+  it('unknown runtime version never blocks — uncertainty keeps the old verdict (#757)', () => {
+    profile(['dsh-capped'])
+    pkg('dsh-capped', {
+      version: '0.5.1',
+      peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    const result = verifyActivation('web', 'dsh-capped', new Set(), undefined, false,
+      { runtimeVersion: null, exemptions: {} })
+    expect(result).toMatchObject({ state: 'restart', hot: false, bundle: true })
+  })
+
   it('inert when installed as a plain dependency (no dsh.bundle, no dsh.client)', () => {
     profile([])
     pkg('plain-dep', { dsh: {}, main: 'index.js' }, { 'index.js': '' })

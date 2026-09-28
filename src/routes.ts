@@ -54,7 +54,7 @@ import { createThemeManager, type LoaderEntry } from './themes.ts'
 import { readJsonBody, sameOrigin, sendJson } from './http.ts'
 import { detectedDebugger, detectedSupervisor, restartAllowed, scheduleRestart, servingPort, trustedRestartRequest, trustedDownloadRequest, type RecoveryHandoffConfig } from './restart.ts'
 import type { RecoveryPlugin } from './recovery.ts'
-import { activationAfterReplace, brokenClientBundles, checkClientBundle, hasHostHalf, newlyBrokenBundles, verifyActivation } from './verify.ts'
+import { activationAfterReplace, brokenClientBundles, checkClientBundle, defaultHostRuntimeFacts, hasHostHalf, hostPeerGate, newlyBrokenBundles, verifyActivation } from './verify.ts'
 import {
   carrierDisableIds, disableRow, enableRow, findUserPatchPath, foreignRowIds, isProtectedModule, packagePatchFlags,
   readUserPatchState, removeRowBlocks, rowIdsForPackage, userPatchPackageReferences,
@@ -2633,6 +2633,20 @@ export function mountMarketRoutes(
               error: `${name} 属于宿主基础设施,禁止开关(会破坏热加载/传输/存储链) / ${name} is host infrastructure and cannot be toggled (it would break the hot-reload/transport/storage chain)`,
             })
             return
+          }
+          // #757: enabling a plugin the host's boot gate would skip anyway
+          // would replay the bug — the toggle flips, the hot mount fails, and
+          // the card reads "enabled, restart to apply" forever because no
+          // restart can ever load it. Refuse up front and say what to do.
+          if (enabled) {
+            const gate = hostPeerGate(activeProfileDir, name, defaultHostRuntimeFacts(activeProfileDir))
+            if (gate !== null) {
+              sendJson(response, 409, {
+                error: `${name} 新版要求宿主 ${gate.range},当前运行 ${gate.runtimeVersion},开了也不会生效;可等插件更新适配、装回旧版本或升级 dsh / ${name} needs host ${gate.range} but this host runs ${gate.runtimeVersion} — enabling it now would not take effect; wait for an updated release, go back to the previous version, or upgrade dsh`,
+                blocked: true,
+              })
+              return
+            }
           }
           pendingRollbacks.clear()
           let ok: boolean
