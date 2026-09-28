@@ -9830,22 +9830,31 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				...installed
 			};
 			/**
-			* Installed entries ordered for the list view.
+			* Installed entries ordered for the list view: enabled plugins first
+			* (#745), then rows with a pending update, then manifest order — a stable
+			* sort, so each of those groups keeps its own order.
 			*
 			* The order settles once and then holds, so rows never reshuffle under a
-			* pointer that is already aiming at one (#631). The single moment that has
-			* to reorder is when the update check lands: `/installed` is a local read
+			* pointer that is already aiming at one (#631). Two moments are allowed to
+			* move it. One is when the update check lands: `/installed` is a local read
 			* and `/updates` is a network probe over every package, so the list is
 			* always rendered BEFORE the answer exists — freezing on the view alone
 			* would leave it in manifest order forever. `updatesLoaded` is therefore
 			* the one part of `updates` allowed in, as a boolean: it flips once when
 			* the result arrives, and every later change (a newer check, a row the user
-			* just updated) leaves the boolean and the order alone.
+			* just updated) leaves the boolean and the order alone. The other is the
+			* disable set changing: when the snapshot first arrives, or when a switch
+			* the user flipped settles — and in the switch case the toggled row is the
+			* only one that crosses the enabled/disabled line, so every other row
+			* stays where it was.
 			*/
 			const isInstalledListActive = tab === "installed" && installedView === "list";
 			const updatesLoaded = Object.keys(updates).length > 0;
 			const orderedInstalledEntries = (0, react.useMemo)(() => {
 				return Object.entries(displayedInstalled).filter(([name]) => name !== selfName).sort(([nameA, specA], [nameB, specB]) => {
+					const aOn = effectiveDisabledSet.has(nameA) ? 0 : 1;
+					const bOn = effectiveDisabledSet.has(nameB) ? 0 : 1;
+					if (aOn !== bOn) return bOn - aOn;
 					const aUp = isPluginUpdatable(nameA, String(specA), updates[nameA], updatedNames, ignoredUpdateSet) ? 1 : 0;
 					return (isPluginUpdatable(nameB, String(specB), updates[nameB], updatedNames, ignoredUpdateSet) ? 1 : 0) - aUp;
 				});
@@ -9853,7 +9862,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				isInstalledListActive,
 				displayedInstalled,
 				selfName,
-				updatesLoaded
+				updatesLoaded,
+				effectiveDisabledSet
 			]);
 			const missingRestoreCount = Object.keys(pendingDependencies).filter((name) => !installedFiles.includes(name)).length;
 			const hasUpdates = reminderUpdatableNames.length > 0;

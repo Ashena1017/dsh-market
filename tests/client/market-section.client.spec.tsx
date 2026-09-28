@@ -3154,6 +3154,44 @@ describe('installed masonry layout (#273)', () => {
       .toEqual(['gamma', 'alpha', 'beta', 'delta'])
   })
 
+  it('lists enabled plugins ahead of disabled ones (#745)', async () => {
+    const media = {
+      matches: false,
+      media: '(min-width: 681px)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true),
+    }
+    vi.stubGlobal('matchMedia', vi.fn(() => media))
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web',
+        installed: { alpha: '^1.0.0', beta: '^1.0.0', gamma: '^1.0.0', delta: '^1.0.0' },
+        live: [],
+        disabled: ['beta'],
+      },
+      '/dsh-market/updates': {
+        updates: {
+          // A pending update on a DISABLED row must not lift it over any
+          // enabled one: it sorts inside the group it lands in.
+          beta: { kind: 'npm', version: '1.0.0', current: '1.0.0', latest: '2.0.0', updateAvailable: true },
+        },
+      },
+    })
+    const { container } = render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    await screen.findByText('delta')
+
+    const columns = [...container.querySelectorAll('[class*="masonryCol"]')] as HTMLElement[]
+    expect(columns).toHaveLength(1)
+    expect([...columns[0]!.querySelectorAll('[class*="irowNameText"]')].map(row => row.textContent?.trim()))
+      .toEqual(['alpha', 'gamma', 'delta', 'beta'])
+  })
+
   it('reorders once when the update check lands, then holds (#631)', async () => {
     const media = {
       matches: false,
