@@ -1447,6 +1447,32 @@ export function pluginName(name: string): string {
 }
 
 /**
+ * The catalog package name used for the local block list (#657).
+ *
+ * Prefer the npm package when the catalog carries one. Fall back to the
+ * repository name for entries that have not published one yet.
+ */
+export function blockPackageName(plugin: Pick<RegistryPlugin, 'name' | 'npm'>): string {
+  return typeof plugin.npm === 'string' && plugin.npm !== '' ? plugin.npm : plugin.name
+}
+
+/**
+ * Names that count as one blocked plugin (#657).
+ *
+ * A linked checkout can be installed under a package name the catalog does
+ * not use. The installed name comes first so a new block is stored as the
+ * name Update all already filters on; the catalog name stays in the list so
+ * a block made from either side still matches the other.
+ */
+export function blockAliases(plugin: Pick<RegistryPlugin, 'name' | 'npm'>, installedName?: string | null): string[] {
+  const catalogName = blockPackageName(plugin)
+  if (typeof installedName === 'string' && installedName !== '' && installedName !== catalogName) {
+    return [installedName, catalogName]
+  }
+  return [catalogName]
+}
+
+/**
  * Compact display for a count that can run into the tens of thousands
  * (npm downloads, star counts): "11.9k" instead of "11862". Reported —
  * the raw number made the card byline visibly cramped once downloads was

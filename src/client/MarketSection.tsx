@@ -50,7 +50,7 @@ import { Diagnostics } from './Diagnostics.tsx'
 import { exportMarketLog } from './self-check.ts'
 import {
   api, applyGithubRouting, avatarColor, catalogEntryForInstalled, entryForDep, githubRouteCandidates, groupSwitchState, humanOutput, installedForCatalog, isGenerationSpec, isInstalled, localizeBilingual, localizeBilingualList, looksTerminal, matchInstalledName, orderedCategories, pluginCategories,
-  formatCount, pageItems, pluginName, pluginScreenshotCandidates, pluginScreenshots, pluginsForFavorites, queuedRowApplies, rankThemeScreenshots, readSession, releaseNotesHttpsImage, rememberGithubRoute, resetScreenshotsCache, resolveCatalogRestore, safeScreenshots, sanitizeReleaseNotesBody, staleFavoriteUrls, themePlugins as themePluginsOf, themeSwatch, TIME_RANGE_DAYS, visiblePlugins,
+  formatCount, pageItems, pluginName, blockAliases, pluginScreenshotCandidates, pluginScreenshots, pluginsForFavorites, queuedRowApplies, rankThemeScreenshots, readSession, releaseNotesHttpsImage, rememberGithubRoute, resetScreenshotsCache, resolveCatalogRestore, safeScreenshots, sanitizeReleaseNotesBody, staleFavoriteUrls, themePlugins as themePluginsOf, themeSwatch, TIME_RANGE_DAYS, visiblePlugins,
 } from './market-data.ts'
 import type {
 ActivationInfo, ActivationState, GistExportResult, InstalledMap, InstalledRepoHints, InstalledRepoIdentities, MarketStatus, Registry, RegistryPlugin,
@@ -1546,6 +1546,13 @@ export function MarketSection(props: MarketSectionProps) {
   const [favoriteError, setFavoriteError] = useState<string | null>(null)
   /** Ignores out-of-order /dsh-market/favorite responses after a newer toggle. */
   const favoriteOpGen = useRef(0)
+  const [blockError, setBlockError] = useState<string | null>(null)
+  /** Shown once a hide sticks, so the card vanishing has a place to look. */
+  const [blockNotice, setBlockNotice] = useState<string | null>(null)
+  /** Ignores out-of-order /dsh-market/block responses after a newer toggle. */
+  const blockOpGen = useRef(0)
+  const [pluginMenuUrl, setPluginMenuUrl] = useState<string | null>(null)
+  const [installedMenuName, setInstalledMenuName] = useState<string | null>(null)
   const [clearingStale, setClearingStale] = useState(false)
   /** The notes payload the server answers with, verbatim (see /changelog). */
   type NoteRelease = { tag: string | null; name: string | null; publishedAt: string | null; url: string | null; body: string }
@@ -1593,6 +1600,8 @@ export function MarketSection(props: MarketSectionProps) {
    * reset the Toast's auto-dismiss timer on every parent re-render. */
   const exportToastDone = useCallback(() => setExportState('idle'), [])
   const favoriteErrorDone = useCallback(() => setFavoriteError(null), [])
+  const blockErrorDone = useCallback(() => setBlockError(null), [])
+  const blockNoticeDone = useCallback(() => setBlockNotice(null), [])
   const [updates, setUpdates] = useState<Record<string, UpdateStatus>>({})
   /** Update reminders dismissed for this host boot. The Installed tab still
    * shows these plugins and their update actions; only proactive prompts use
@@ -1692,6 +1701,8 @@ export function MarketSection(props: MarketSectionProps) {
   const [notes, setNotes] = useState<Record<string, string>>({})
   /** Catalog URLs bookmarked for later install (#414). */
   const [favoriteUrls, setFavoriteUrls] = useState<string[]>([])
+  /** Package names the user hid from Discover (#657). */
+  const [blockedNames, setBlockedNames] = useState<string[]>([])
   /** Rows the user asked to show the AUTHOR's description on, despite a note. */
   const [showTheirs, setShowTheirs] = useState<string[]>([])
   /** The row whose note is being edited, and the text in the box. */
@@ -1921,6 +1932,7 @@ export function MarketSection(props: MarketSectionProps) {
         if (body.groups && typeof body.groups === 'object') setGroups(body.groups)
         if (Array.isArray(body.groupOrder)) setGroupOrder(body.groupOrder)
         if (Array.isArray(body.favorites)) setFavoriteUrls(body.favorites.filter((url: unknown): url is string => typeof url === 'string'))
+        if (Array.isArray(body.blocked)) setBlockedNames(body.blocked.filter((name: unknown): name is string => typeof name === 'string'))
         setInstalledBundles(Array.isArray(body.bundles) ? body.bundles.filter((name: unknown): name is string => typeof name === 'string') : [])
         if (body.activation && typeof body.activation === 'object') setActivations(body.activation)
         const findings = body.diagnostics?.schema === 'dsh-market/diagnostics/v1'
@@ -1945,6 +1957,7 @@ export function MarketSection(props: MarketSectionProps) {
   /** Lookup set for the persisted disable list (#60). */
   const disabledSet = useMemo(() => new Set(disabledNames), [disabledNames])
   const favoriteUrlSet = useMemo(() => new Set(favoriteUrls), [favoriteUrls])
+  const blockedNameSet = useMemo(() => new Set(blockedNames), [blockedNames])
   /** Effective switch state: market disable list ∪ user-patch-layer disables. */
   const effectiveDisabledSet = useMemo(
     () => new Set([...disabledNames, ...patchDisabledNames, ...unbundledNames]),
@@ -2324,7 +2337,7 @@ export function MarketSection(props: MarketSectionProps) {
     setShowTop(false)
   }, [tab, q, cat, sortField, sortDir, timeRange, compatibleWithHost, qThemes, themeSortField, themeSortDir, themeTimeRange, qFavorites, favSortField, favSortDir, favTimeRange, qInstalled, installedView])
 
-  const plugins = useMemo(
+  const pluginsAll = useMemo(
     () => (data === null ? [] : visiblePlugins(data.plugins, {
       category: cat, query: q, lang, categories: data.categories,
       sort: `${sortField}-${sortDir}`,
@@ -2333,6 +2346,26 @@ export function MarketSection(props: MarketSectionProps) {
       compatibleWithHost,
     })),
     [data, q, cat, lang, sortField, sortDir, timeRange, hostCompatibility, compatibleWithHost])
+  // One plugin can be stored under the installed name or the catalog name.
+  // Both have to hide the card and skip Update all (#657).
+  const pluginBlocked = (plugin: RegistryPlugin): boolean =>
+    blockAliases(plugin, matchInstalledName(plugin, installed, repoIdentities, data?.plugins, repoHints))
+      .some(name => blockedNameSet.has(name))
+  const installedBlocked = (name: string): boolean => {
+    if (blockedNameSet.has(name)) return true
+    if (data === null) return false
+    const spec = installed[name]
+    if (spec === undefined) return false
+    const entry = catalogEntryForInstalled(data.plugins, name, String(spec), repoIdentities[name], repoHints[name])
+    return entry !== undefined && blockAliases(entry, name).some(alias => blockedNameSet.has(alias))
+  }
+  const blockToggleName = (aliases: readonly string[]): string =>
+    aliases.find(name => blockedNameSet.has(name)) ?? aliases[0]!
+  const plugins = useMemo(
+    () => pluginsAll.filter(plugin => !pluginBlocked(plugin)),
+    // pluginBlocked closes over the installed map and the catalog match.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pluginsAll, blockedNameSet, installed, repoIdentities, data, repoHints])
   const { currentPage, totalPages, pageSize, goToPage, changePageSize } =
     usePagination(plugins.length, [q, cat, sortField, sortDir, timeRange, compatibleWithHost], scrollToTop)
   const pagePlugins = plugins.slice((currentPage - 1) * pageSize, currentPage * pageSize)
@@ -2359,13 +2392,28 @@ export function MarketSection(props: MarketSectionProps) {
     (count, name) => count + (hostCompatibility[name] === undefined ? 0 : 1), 0,
   )
 
-  const themePlugins = useMemo(
+  const themePluginsAll = useMemo(
     () => (data === null ? [] : visiblePlugins(data.plugins, {
       category: 'theme', query: qThemes, lang, categories: data.categories,
       sort: `${themeSortField}-${themeSortDir}`,
       sinceDays: themeTimeRange === 'all' ? undefined : TIME_RANGE_DAYS[themeTimeRange],
     })),
     [data, qThemes, lang, themeSortField, themeSortDir, themeTimeRange])
+  const themePlugins = useMemo(
+    () => themePluginsAll.filter(plugin => !pluginBlocked(plugin)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [themePluginsAll, blockedNameSet, installed, repoIdentities, data, repoHints])
+  const blockedPlugins = useMemo(
+    () => (data === null ? [] : data.plugins.filter(plugin => pluginBlocked(plugin))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data, blockedNameSet, installed, repoIdentities, repoHints])
+  const blockedMissing = useMemo(
+    () => {
+      const covered = new Set(blockedPlugins.flatMap(plugin =>
+        blockAliases(plugin, matchInstalledName(plugin, installed, repoIdentities, data?.plugins, repoHints))))
+      return blockedNames.filter(name => !covered.has(name))
+    },
+    [blockedNames, blockedPlugins, installed, repoIdentities, data, repoHints])
   const themePagination = usePagination(
     themePlugins.length, [qThemes, themeSortField, themeSortDir, themeTimeRange], scrollToTop)
   const themePagePlugins = themePlugins.slice(
@@ -3175,6 +3223,45 @@ export function MarketSection(props: MarketSectionProps) {
       })
   }, [favoriteUrlSet, favoriteUrls, t])
 
+  const toggleBlock = useCallback((name: string) => {
+    const gen = ++blockOpGen.current
+    const nextBlocked = !blockedNameSet.has(name)
+    const previous = blockedNames
+    setBlockError(null)
+    setBlockedNames((list) => {
+      if (nextBlocked) return list.includes(name) ? list : [...list, name]
+      return list.filter(entry => entry !== name)
+    })
+    fetch(api('/dsh-market/block'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, blocked: nextBlocked }),
+    })
+      .then(async (res) => {
+        const text = await res.text()
+        let body: { ok?: unknown; blocked?: unknown; error?: unknown } | null = null
+        if (text !== '') {
+          try { body = JSON.parse(text) as { ok?: unknown; blocked?: unknown; error?: unknown } } catch { /* non-JSON */ }
+        }
+        return { status: res.status, body }
+      })
+      .then(({ status, body }) => {
+        if (gen !== blockOpGen.current) return
+        if (status === 200 && body?.ok === true && Array.isArray(body.blocked)) {
+          setBlockedNames(body.blocked.filter((entry: unknown): entry is string => typeof entry === 'string'))
+          if (nextBlocked) setBlockNotice(t('blockMoved'))
+          return
+        }
+        setBlockedNames(previous)
+        setBlockError(typeof body?.error === 'string' ? body.error : t('blockFailed'))
+      })
+      .catch((error: unknown) => {
+        if (gen !== blockOpGen.current) return
+        setBlockedNames(previous)
+        setBlockError(String(error))
+      })
+  }, [blockedNameSet, blockedNames, t])
+
   const clearStaleFavorites = useCallback(() => {
     if (favoriteStale.length === 0) return
     const gen = ++favoriteOpGen.current
@@ -3603,13 +3690,13 @@ export function MarketSection(props: MarketSectionProps) {
   // gate because the source switch cannot be rolled back.
   const batchUpdatableNames = updatableNames.filter(name => updates[name]?.restoreRequired !== true)
   const ignoredUpdateSet = useMemo(() => new Set(ignoredUpdateNames), [ignoredUpdateNames])
-  const reminderUpdatableNames = updatableNames.filter(name => !ignoredUpdateSet.has(name))
-  const reminderBatchUpdatableNames = batchUpdatableNames.filter(name => !ignoredUpdateSet.has(name))
+  const reminderUpdatableNames = updatableNames.filter(name => !ignoredUpdateSet.has(name) && !installedBlocked(name))
+  const reminderBatchUpdatableNames = batchUpdatableNames.filter(name => !ignoredUpdateSet.has(name) && !installedBlocked(name))
   const selfUpdateAvailable = updates[selfName]?.updateAvailable === true && !updatedNames.includes(selfName)
   const reminderUpdateNames = [
     ...(selfUpdateAvailable ? [selfName] : []),
     ...updatableNames,
-  ].filter(name => !ignoredUpdateSet.has(name))
+  ].filter(name => !ignoredUpdateSet.has(name) && !installedBlocked(name))
   // The market manages itself from its own settings card (Settings → Plugins
   // → Plugin configuration), not as a row here — listing it in both places
   // read as two different controls for the same thing.
@@ -3943,6 +4030,67 @@ export function MarketSection(props: MarketSectionProps) {
     )
   }
 
+  const renderPluginMenu = (plugin: RegistryPlugin) => {
+    const aliases = blockAliases(plugin, matchInstalledName(plugin, installed, repoIdentities, data?.plugins, repoHints))
+    const hidden = aliases.some(name => blockedNameSet.has(name))
+    return (
+      <Menu
+        open={pluginMenuUrl === plugin.url}
+        onClose={() => setPluginMenuUrl(null)}
+        onSelect={(id) => {
+          setPluginMenuUrl(null)
+          if (id === 'block') toggleBlock(blockToggleName(aliases))
+        }}
+        align="end"
+        portal
+        anchor={(
+          <button
+            type="button"
+            className={css.cardMore}
+            aria-label={t('groupMore')}
+            aria-expanded={pluginMenuUrl === plugin.url}
+            onClick={() => setPluginMenuUrl(open => open === plugin.url ? null : plugin.url)}
+          >···</button>
+        )}
+        items={[{ id: 'block', label: hidden ? t('blockRemove') : t('blockAdd') }]}
+      />
+    )
+  }
+
+  const renderInstalledBlockMenu = (name: string) => {
+    const entry = data === null ? undefined : catalogEntryForInstalled(data.plugins, name, String(installed[name] ?? ''), repoIdentities[name], repoHints[name])
+    const aliases = entry === undefined ? [name] : blockAliases(entry, name)
+    const hidden = aliases.some(alias => blockedNameSet.has(alias))
+    const removing = removingName === name
+    const uninstallBusy = removingName !== null || busyUrl !== null || updatingName !== null
+    return (
+      <Menu
+        open={installedMenuName === name}
+        onClose={() => setInstalledMenuName(null)}
+        onSelect={(id) => {
+          setInstalledMenuName(null)
+          if (id === 'block') toggleBlock(blockToggleName(aliases))
+          if (id === 'uninstall' && !uninstallBusy) setRemoveConfirm(name)
+        }}
+        align="end"
+        portal
+        anchor={(
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={t('groupMore')}
+            onClick={() => setInstalledMenuName(open => open === name ? null : name)}
+          >···</Button>
+        )}
+        items={[
+          { id: 'block', label: hidden ? t('blockRemove') : t('blockAdd') },
+          { type: 'separator', id: 'uninstall-sep' },
+          { id: 'uninstall', label: removing ? t('uninstalling') : t('uninstall'), danger: true, disabled: uninstallBusy },
+        ]}
+      />
+    )
+  }
+
   /**
    * Chip label for one capability name, or the scanner's own name.
    *
@@ -4232,6 +4380,7 @@ export function MarketSection(props: MarketSectionProps) {
             <button type="button" className={css.commentsLink} onClick={() => setCommentsFor(p)}>
               {t('comments')}
             </button>
+            {renderPluginMenu(p)}
           </span>
         </div>
         {busy && (
@@ -4329,6 +4478,7 @@ export function MarketSection(props: MarketSectionProps) {
           <div className={css.themeCardFooter}>
             <span className={css.footActions}>
               {renderFavoriteControl(p.url)}
+              {renderPluginMenu(p)}
             </span>
             {instName === null && (
               <span className={css.themeLifecycle}>{done ? t('installedBadge') : t('notInstalled')}</span>
@@ -4656,6 +4806,9 @@ export function MarketSection(props: MarketSectionProps) {
           <button className={tab === 'installed' ? `${css.tab} ${css.on}` : css.tab} onClick={() => { setTab('installed'); refreshInstalled(true) }}>
             {t('tabInstalled') + (installedOtherCount > 0 ? ' (' + installedOtherCount + ')' : '')}
             {hasUpdates && <StateDot state="error" size={7} className={css.dot} />}
+          </button>
+          <button className={tab === 'blocked' ? `${css.tab} ${css.on}` : css.tab} onClick={() => setTab('blocked')}>
+            {t('tabBlocked') + (blockedNames.length > 0 ? ' (' + blockedNames.length + ')' : '')}
           </button>
           <button
             className={(tab === 'backup' || tab === 'diagnostics') ? `${css.tab} ${css.on}` : css.tab}
@@ -5145,7 +5298,7 @@ export function MarketSection(props: MarketSectionProps) {
                     </div>
                     </div>
                     {plugins.length === 0
-                      ? <div className={css.empty}>{t('empty')}</div>
+                      ? <div className={css.empty}>{pluginsAll.length > 0 ? t('blockedFilteredEmpty') : t('empty')}</div>
                       : (
                           <>
                             <Masonry items={pagePlugins} render={pluginCard} />
@@ -5301,7 +5454,7 @@ export function MarketSection(props: MarketSectionProps) {
                     : anyThemePlugins.length === 0
                       ? <div className={css.empty}>{t('themeEmpty')}</div>
                       : themePlugins.length === 0
-                        ? <div className={css.empty}>{t('empty')}</div>
+                        ? <div className={css.empty}>{themePluginsAll.length > 0 ? t('blockedFilteredEmpty') : t('empty')}</div>
                         : (
                             <>
                               <div className={css.themeResultBar}>
@@ -5324,6 +5477,27 @@ export function MarketSection(props: MarketSectionProps) {
               )
             : tab === 'diagnostics'
             ? <Diagnostics t={t} />
+            : tab === 'blocked'
+              ? data === null
+                ? <div className={css.loading}><span className={css.logoMark}><MarketLogo size={26} animated /></span>{t('loading')}</div>
+                : blockedNames.length === 0
+                  ? <div className={css.empty}>{t('blockedEmpty')}</div>
+                  : (
+                      <>
+                        <div className={css.blockedTabHint}>{t('blockedTabHint')}</div>
+                        {blockedPlugins.length > 0 && <Masonry items={blockedPlugins} render={pluginCard} />}
+                        {blockedMissing.length > 0 && (
+                          <div className={css.blockedMissing}>
+                            {blockedMissing.map(name => (
+                              <div key={name} className={css.blockedBarRow}>
+                                <span className={css.blockedBarName} title={name}>{name}</span>
+                                <button type="button" className={css.blockedBarUndo} onClick={() => toggleBlock(name)}>{t('blockRemove')}</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )
             : (
                 <>
                   <div className={css.viewBar}>
@@ -5837,13 +6011,8 @@ export function MarketSection(props: MarketSectionProps) {
                                     </>
                                   )
                                 })()}
-                                {/* Status slot and Uninstall wrap as ONE unit. As
-                                    sibling children of a wrapping flex row they broke
-                                    apart independently, leaving the tag on one line and
-                                    the button on the next (#242 by @Ztyss). Nested,
-                                    the pair either fits or moves together, and the tag
-                                    — already ellipsizing since #234 — is what gives up
-                                    width first. */}
+                                {/* Status and the more menu stay one unit, so a wrap
+                                    moves them together (#242). */}
                                 <span className={css.irowTrailing}>
                                 {!missing && status?.sourceMigration !== undefined && (
                                   <Button
@@ -5886,19 +6055,8 @@ export function MarketSection(props: MarketSectionProps) {
                                               >{t('restore')}</button>
                                             )
                                           : <span className={css.metaTag} title={t('upToDate')}>{t('upToDate')}</span>}
-                                {!missing && name !== 'dsh-market' && name !== 'dshmarket' && (
-                                  removingName === name
-                                    ? <Button variant="outline" size="sm" className={css.dangerBtn} disabled>{t('uninstalling')}</Button>
-                                    : (
-                                        <Button
-                                          variant="outline"
-                                          size="sm"
-                                          className={css.dangerBtn}
-                                          disabled={removingName !== null || busyUrl !== null || updatingName !== null}
-                                          onClick={() => setRemoveConfirm(name)}
-                                        >{t('uninstall')}</Button>
-                                      )
-                                )}
+                                {removingName === name && <span className={css.metaTag}>{t('uninstalling')}</span>}
+                                {!missing && name !== 'dsh-market' && name !== 'dshmarket' && renderInstalledBlockMenu(name)}
                                 </span>
                                 </div>
                               </div>
@@ -6501,6 +6659,12 @@ export function MarketSection(props: MarketSectionProps) {
       )}
       {favoriteError !== null && (
         <Toast text={localizeBilingual(favoriteError, lang)} icon={<IconWarningOutline16 size={14} />} onDone={favoriteErrorDone} />
+      )}
+      {blockError !== null && (
+        <Toast text={localizeBilingual(blockError, lang)} icon={<IconWarningOutline16 size={14} />} onDone={blockErrorDone} />
+      )}
+      {blockNotice !== null && (
+        <Toast text={blockNotice} onDone={blockNoticeDone} />
       )}
       {toggled !== null && (
         <Toast
