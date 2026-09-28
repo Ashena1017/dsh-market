@@ -524,6 +524,7 @@ const hot = vi.hoisted(() => ({
   githubProxy: undefined as string | undefined,
   notes: {} as Record<string, string>,
   favorites: [] as string[],
+  blocked: [] as string[],
   /** Stands in for the buildEnv line of state.json; undefined = composition. */
   buildEnv: undefined as Record<string, string> | undefined,
   /** The live source the routes installed, so a test can read what a spawn would. */
@@ -538,6 +539,7 @@ vi.mock('../src/hot.ts', async (importOriginal) => ({
   ...await importOriginal<typeof import('../src/hot.ts')>(),
   MAX_NOTE: 200,
   MAX_FAVORITES: 500,
+  MAX_BLOCKED: 500,
   cleanHotDir: () => {},
   readDisabledThemes: () => hot.disabled,
   writeDisabledThemes: (_dir: string, set: Set<string>) => { hot.disabled = new Set(set) },
@@ -547,7 +549,7 @@ vi.mock('../src/hot.ts', async (importOriginal) => ({
     disabled: hot.disabled, groups: hot.groups, groupOrder: hot.groupOrder,
     channel: hot.channel, region: hot.region, regionAuto: hot.regionAuto,
     githubProxy: hot.githubProxy,
-    notes: hot.notes, favorites: hot.favorites,
+    notes: hot.notes, favorites: hot.favorites, blocked: hot.blocked,
     buildEnv: hot.buildEnv,
   }),
   // Carries `channel` because the real one does. A stand-in that silently
@@ -558,7 +560,7 @@ vi.mock('../src/hot.ts', async (importOriginal) => ({
     disabled: Set<string>; groups: Record<string, string[]>; groupOrder: string[]
     channel?: 'stable' | 'beta' | 'dev'; region?: 'global' | 'china'; regionAuto?: true
     githubProxy?: string
-    notes?: Record<string, string>; favorites?: string[]
+    notes?: Record<string, string>; favorites?: string[]; blocked?: string[]
     buildEnv?: Record<string, string>
   }) => {
     hot.disabled = new Set(state.disabled)
@@ -571,6 +573,7 @@ vi.mock('../src/hot.ts', async (importOriginal) => ({
     if (Object.prototype.hasOwnProperty.call(state, 'githubProxy')) hot.githubProxy = state.githubProxy
     if (state.notes !== undefined) hot.notes = state.notes
     if (state.favorites !== undefined) hot.favorites = state.favorites
+    if (state.blocked !== undefined) hot.blocked = state.blocked
   },
   listHotMounts: () => [...hot.mounts],
   hotMount: (_ctx: unknown, _dir: string, name: string) => {
@@ -812,6 +815,7 @@ beforeEach(() => {
   hot.githubProxy = undefined
   hot.notes = {}
   hot.favorites = []
+  hot.blocked = []
   hot.buildEnv = undefined
   hot.buildEnvSource = undefined
   regionProbe.pending = null
@@ -6381,6 +6385,48 @@ describe('favorites (#414)', () => {
     const fav = await favorite
     expect(fav.status).toBe(200)
     expect(fav.json.favorites).toEqual(['https://github.com/o/dsh-share'])
+  })
+})
+
+describe('blocked plugins (#657)', () => {
+  it('adds and removes a package name and returns it from GET /installed', async () => {
+    const add = await bed.dispatch('POST', '/dsh-market/block', { name: 'dsh-loop', blocked: true })
+    expect(add.status).toBe(200)
+    expect(add.json.blocked).toEqual(['dsh-loop'])
+    expect(hot.blocked).toEqual(['dsh-loop'])
+
+    const listed = await bed.dispatch('GET', '/dsh-market/installed')
+    expect(listed.json.blocked).toEqual(['dsh-loop'])
+
+    const remove = await bed.dispatch('POST', '/dsh-market/block', { name: 'dsh-loop', blocked: false })
+    expect(remove.status).toBe(200)
+    expect(remove.json.blocked).toEqual([])
+    expect(hot.blocked).toEqual([])
+  })
+
+  it('rejects an empty name and a cross-origin write', async () => {
+    expect((await bed.dispatch('POST', '/dsh-market/block', { name: '', blocked: true })).status).toBe(400)
+    expect((await bed.dispatch('POST', '/dsh-market/block', { name: '  ', blocked: true })).status).toBe(400)
+    expect((await bed.dispatch('POST', '/dsh-market/block', { name: 'dsh-loop', blocked: true }, { crossOrigin: true })).status).toBe(403)
+    expect((await bed.dispatch('POST', '/dsh-market/block', { name: 'a'.repeat(300), blocked: true })).status).toBe(400)
+  })
+
+  it('a disable toggle does not clear blocked names', async () => {
+    fake.npm['dsh-loop'] = {
+      latest: '1.0.0',
+      versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } },
+    }
+    await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+    await bed.dispatch('POST', '/dsh-market/block', { name: 'dsh-notify', blocked: true })
+    await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-loop', enabled: false })
+    expect(hot.blocked).toEqual(['dsh-notify'])
+  })
+
+  it('rejects blocked names beyond MAX_BLOCKED', async () => {
+    hot.blocked = Array.from({ length: 500 }, (_, index) => `dsh-p-${index}`)
+    const add = await bed.dispatch('POST', '/dsh-market/block', { name: 'dsh-one-more', blocked: true })
+    expect(add.status).toBe(400)
+    expect(hot.blocked).toHaveLength(500)
   })
 })
 

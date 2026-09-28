@@ -16,7 +16,7 @@ import { load as loadYaml } from 'js-yaml'
 import { forgetCatalog, loadRegistry, pluginCategories } from './registry.ts'
 import { settingsNamespaceState } from './settings.ts'
 import {
-  buildEnvFromUnknown, cleanHotDir, hotMount, hotUnmount, listHotMounts, MAX_FAVORITES, MAX_NOTE,
+  buildEnvFromUnknown, cleanHotDir, hotMount, hotUnmount, listHotMounts, MAX_BLOCKED, MAX_BLOCKED_NAME, MAX_FAVORITES, MAX_NOTE,
   mountClientOnlyDeps, purgeMarketState, readMarketState, writeMarketState,
 } from './hot.ts'
 import { createGroup, deleteGroup, removeFromGroups, renameGroup, setGroupMembers } from './groups.ts'
@@ -493,6 +493,7 @@ export function mountMarketRoutes(
     marketState.region = fresh.region
     marketState.regionAuto = fresh.regionAuto
     marketState.favorites = fresh.favorites
+    marketState.blocked = fresh.blocked
     marketState.githubProxy = fresh.githubProxy
     // Refreshed like the rest: a declaration this route dropped (#663) must
     // survive another writer's read-back, which is the whole point of this
@@ -2243,6 +2244,7 @@ export function mountMarketRoutes(
           groupOrder,
           notes: readMarketState(activeProfileDir).notes ?? {},
           favorites: readMarketState(activeProfileDir).favorites ?? [],
+          blocked: readMarketState(activeProfileDir).blocked ?? [],
           patch: { disables: patch.disables, forced: patch.forced, inserts: patch.inserts },
           patchDisabled: patchFlags.disabled,
           unbundled,
@@ -2926,6 +2928,59 @@ export function mountMarketRoutes(
 
     host.webServer.register({
       kind: 'exact',
+      path: '/dsh-market/block',
+      handler: async (request, response) => {
+        if (request.method !== 'POST') {
+          response.writeHead(405, { allow: 'POST' })
+          response.end()
+          return
+        }
+        if (!sameOrigin(request)) {
+          sendJson(response, 403, { error: 'untrusted origin' })
+          return
+        }
+        try {
+          await withMutationQueued(async () => {
+            const body = (await readJsonBody(request)) as { name?: unknown; blocked?: unknown } | null
+            const name = typeof body?.name === 'string' ? body.name.trim() : ''
+            if (name === '' || name.length > MAX_BLOCKED_NAME) {
+              sendJson(response, 400, { error: 'name is required / 需要 name' })
+              return
+            }
+            const state = readMarketState(activeProfileDir)
+            const blocked = [...(state.blocked ?? [])]
+            const wantBlocked = body?.blocked === true
+            if (wantBlocked) {
+              if (blocked.includes(name)) {
+                sendJson(response, 200, { ok: true, blocked })
+                return
+              }
+              if (blocked.length >= MAX_BLOCKED) {
+                sendJson(response, 400, {
+                  error: `blocked limit reached (${String(MAX_BLOCKED)}) / 屏蔽已达上限（${String(MAX_BLOCKED)}）`,
+                })
+                return
+              }
+              blocked.push(name)
+            } else {
+              const index = blocked.indexOf(name)
+              if (index !== -1) blocked.splice(index, 1)
+            }
+            // Re-read immediately before write so a concurrent install cannot
+            // leave us holding a stale disabled/groups snapshot (#414/#657).
+            const fresh = readMarketState(activeProfileDir)
+            writeMarketState(activeProfileDir, { ...fresh, blocked })
+            refreshMarketState()
+            sendJson(response, 200, { ok: true, blocked })
+          })
+        } catch (error) {
+          sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }),
+
+    host.webServer.register({
+      kind: 'exact',
       path: '/dsh-market/groups',
       handler: async (request, response) => {
         if (request.method !== 'POST') {
@@ -3391,6 +3446,12 @@ sendJson(response, 200, { updates })
               if (marketNotes[name] !== undefined) {
                 if (marketNotes[targetName] === undefined) marketNotes[targetName] = marketNotes[name]
                 delete marketNotes[name]
+              }
+              const marketBlocked = marketState.blocked ?? (marketState.blocked = [])
+              const blockedAt = marketBlocked.indexOf(name)
+              if (blockedAt !== -1) {
+                marketBlocked.splice(blockedAt, 1)
+                if (!marketBlocked.includes(targetName)) marketBlocked.push(targetName)
               }
             }
 

@@ -273,6 +273,21 @@ export interface MarketState {
    * pre-install list, unlike groups/notes which target installed packages.
    */
   favorites?: string[]
+  /**
+   * Package names the user hid from Discover and Themes (#657).
+   *
+   * Local, per-profile, reversible. The Hidden tab and the settings list
+   * show the same names so the choice can be undone. Independent of
+   * `disabled` (the plugin can keep running) and of the session-only update
+   * ignore (that one dies on restart). A stored name may be the installed
+   * package name or the catalog package name; the client treats both as one
+   * plugin when it can match them.
+   *
+   * Optional on the way in, like `notes` / `favorites`: several callers
+   * build a state object from the few fields they own, and requiring this
+   * one would make every such call a silent way to erase the list (#339).
+   */
+  blocked?: string[]
   /** User-supplied HTTPS prefix used when the built-in GitHub routes fail. */
   githubProxy?: string
   /**
@@ -353,9 +368,23 @@ function uniqueStrings(value: unknown): string[] {
 /** Upper bound on bookmarked catalog URLs kept in state.json (#414). */
 export const MAX_FAVORITES = 500
 
+/** Upper bound on blocked package names kept in state.json (#657). */
+export const MAX_BLOCKED = 500
+
+/** npm package names are at most 214 characters. Longer values are not names. */
+export const MAX_BLOCKED_NAME = 214
+
 /** Catalog URLs the user may favorite; http(s) only, order preserved. */
 function favoriteUrls(value: unknown): string[] {
   return uniqueStrings(value).filter(url => url.startsWith('http://') || url.startsWith('https://'))
+}
+
+/** Package names the user may block; non-empty, order preserved, capped. */
+function blockedNames(value: unknown): string[] {
+  const trimmed = Array.isArray(value)
+    ? value.map(item => typeof item === 'string' ? item.slice(0, MAX_BLOCKED_NAME) : item)
+    : value
+  return uniqueStrings(trimmed).slice(0, MAX_BLOCKED)
 }
 
 /** A POSIX-looking environment variable name: the name part of `KEY=value`. */
@@ -419,6 +448,7 @@ export function readMarketState(profileDir: string): MarketState {
       buildEnv?: unknown
       notes?: unknown
       favorites?: unknown
+      blocked?: unknown
       brokenPlugins?: unknown
     }
     const disabled = uniqueStrings(state.disabled !== undefined ? state.disabled : state.disabledSkins)
@@ -449,12 +479,13 @@ export function readMarketState(profileDir: string): MarketState {
       // with no region would promise a notice about a choice nobody made.
       regionAuto: state.regionAuto === true && asRegion(state.region) !== null ? true : undefined,
       favorites: favoriteUrls(state.favorites),
+      blocked: blockedNames(state.blocked),
       ...(githubProxy === null ? {} : { githubProxy }),
       ...(brokenPlugins === undefined ? {} : { brokenPlugins }),
       buildEnv: buildEnvFromUnknown(state.buildEnv),
     }
   } catch {
-    return { disabled: new Set(), groups: {}, groupOrder: [], notes: {}, favorites: [] }
+    return { disabled: new Set(), groups: {}, groupOrder: [], notes: {}, favorites: [], blocked: [] }
   }
 }
 
@@ -500,6 +531,7 @@ export function writeMarketState(profileDir: string, state: MarketState): void {
     ? state.regionAuto
     : onDisk.regionAuto
   const favorites = state.favorites ?? onDisk.favorites ?? []
+  const blocked = state.blocked ?? onDisk.blocked ?? []
   // This field does have a clear action ("restore automatic"). As with
   // regionAuto, omission preserves while an explicit undefined removes it.
   const githubProxy = Object.prototype.hasOwnProperty.call(state, 'githubProxy')
@@ -513,6 +545,7 @@ export function writeMarketState(profileDir: string, state: MarketState): void {
     groups: state.groups,
     groupOrder: state.groupOrder,
     ...(favorites.length > 0 ? { favorites } : {}),
+    ...(blocked.length > 0 ? { blocked } : {}),
     ...(Object.keys(notes).length > 0 ? { notes } : {}),
     // Omitted while unchosen, so "never picked" survives a round trip and
     // keeps deriving from the running build — but only when disk has not

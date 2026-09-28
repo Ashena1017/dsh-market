@@ -28,6 +28,7 @@ function stubFetch(options: {
   region?: string; regionAuto?: boolean; regionError?: string; githubProxy?: string | null
   githubProxyCustom?: string | null; githubProxyManaged?: boolean; githubProxyError?: string
   buildEnv?: Record<string, string>; buildEnvError?: string
+  blocked?: string[]
 } = {}): void {
   calls = []
   let githubProxyCustom = options.githubProxyCustom ?? null
@@ -95,6 +96,17 @@ function stubFetch(options: {
       return options.removeOk === false
         ? json({ ok: false, error: options.error ?? 'boom' })
         : json({ ok: true, removed: 'dshmarket', restart: options.restart !== false })
+    }
+    if (path.endsWith('/dsh-market/installed')) {
+      return json({ profile: 'web', installed: {}, live: [], disabled: [], blocked: options.blocked ?? [] })
+    }
+    if (path.endsWith('/dsh-market/block')) {
+      const body = JSON.parse(String(init?.body)) as { name: string; blocked: boolean }
+      const next = body.blocked === true
+        ? [...new Set([...(options.blocked ?? []), body.name])]
+        : (options.blocked ?? []).filter(name => name !== body.name)
+      options.blocked = next
+      return json({ ok: true, blocked: next })
     }
     return json({ ok: true })
   }))
@@ -431,6 +443,30 @@ describe('SettingsCard — download region', () => {
     await waitFor(() => {
       expect(calls.filter(call => call.path.endsWith('/dsh-market/status'))).toHaveLength(1)
     })
+  })
+})
+
+describe('SettingsCard — blocked plugins (#657)', () => {
+  it('lists hidden packages and can show one again', async () => {
+    stubFetch({ blocked: ['dsh-loop', 'dsh-notify'] })
+    await open()
+    await waitFor(() => { expect(screen.getByText(t('setBlocked'), { selector: 'div' })).toBeTruthy() })
+    expect(screen.getByText('dsh-loop')).toBeTruthy()
+    expect(screen.getByText('dsh-notify')).toBeTruthy()
+    const row = screen.getByText('dsh-loop').closest('[class*="setBlockedRow"]') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: t('setBlockedUnblock') }))
+    await waitFor(() => {
+      expect(calls.find(call => call.path.endsWith('/dsh-market/block'))?.body)
+        .toEqual({ name: 'dsh-loop', blocked: false })
+    })
+    await waitFor(() => { expect(screen.queryByText('dsh-loop')).toBeNull() })
+    expect(screen.getByText('dsh-notify')).toBeTruthy()
+  })
+
+  it('says so when nothing is hidden', async () => {
+    stubFetch({ blocked: [] })
+    await open()
+    await waitFor(() => { expect(screen.getByText(t('blockedEmpty'))).toBeTruthy() })
   })
 })
 
