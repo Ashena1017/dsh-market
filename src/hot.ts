@@ -276,12 +276,11 @@ export interface MarketState {
   /**
    * Package names the user hid from Discover and Themes (#657).
    *
-   * Local, per-profile, reversible. The Hidden tab and the settings list
-   * show the same names so the choice can be undone. Independent of
-   * `disabled` (the plugin can keep running) and of the session-only update
-   * ignore (that one dies on restart). A stored name may be the installed
-   * package name or the catalog package name; the client treats both as one
-   * plugin when it can match them.
+   * Local, per-profile, reversible. The Hidden tab lists the same names so
+   * the choice can be undone. Independent of `disabled` (the plugin can keep
+   * running) and of the session-only update ignore (that one dies on restart).
+   * A stored name may be the installed package name or the catalog package
+   * name; the client treats both as one plugin when it can match them.
    *
    * Optional on the way in, like `notes` / `favorites`: several callers
    * build a state object from the few fields they own, and requiring this

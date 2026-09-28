@@ -239,9 +239,6 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
    * discover list's retry button covers every plugin except this one (#255).
    */
   const [stale, setStale] = useState(false)
-  /** Package names the user hid from Discover (#657). */
-  const [blockedNames, setBlockedNames] = useState<string[]>([])
-  const [blockBusy, setBlockBusy] = useState<string | null>(null)
 
   // Only once the row is opened: the plugin configuration page renders every
   // card at once, and an update check costs a registry round trip.
@@ -277,23 +274,6 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
         const own = body.updates?.['dshmarket'] ?? body.updates?.['dsh-market']
         if (live && own !== undefined) setUpdate(readUpdate(own))
       } catch { /* an update check that fails leaves the row without an offer */ }
-    })()
-    return () => { live = false }
-  }, [open])
-
-  // The blocked list can change from Discover while this card is closed, so
-  // re-read it every time the row opens (#657).
-  useEffect(() => {
-    if (!open) return
-    let live = true
-    void (async () => {
-      try {
-        const response = await fetch(api('/dsh-market/installed'), { cache: 'no-store' })
-        const body = (await response.json()) as { blocked?: unknown }
-        if (live && Array.isArray(body.blocked)) {
-          setBlockedNames(body.blocked.filter((name: unknown): name is string => typeof name === 'string'))
-        }
-      } catch { /* keep the last known list */ }
     })()
     return () => { live = false }
   }, [open])
@@ -465,28 +445,6 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
     }
   }, [envText, post, t])
 
-  /** Drop one package from the Discover sink list (#657). */
-  const onUnblock = useCallback((name: string) => {
-    setBlockBusy(name)
-    setError(null)
-    void (async () => {
-      try {
-        const body = await post(api('/dsh-market/block'), { name, blocked: false }) as {
-          ok?: boolean; error?: string; blocked?: unknown
-        }
-        if (body.ok === true && Array.isArray(body.blocked)) {
-          setBlockedNames(body.blocked.filter((entry: unknown): entry is string => typeof entry === 'string'))
-        } else {
-          setError(typeof body.error === 'string' ? body.error : t('blockFailed'))
-        }
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause))
-      } finally {
-        setBlockBusy(null)
-      }
-    })()
-  }, [post, t])
-
   /** One label + hint block with an optional action, the host's row shape. */
   const row = (label: string, hint: string, action: ReactElement | null): ReactElement =>
     h('div', { className: css.setRow },
@@ -591,25 +549,6 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
               onClick: () => { onRegion(id) },
             }, t(REGION_LABEL[id]))),
           )),
-        // Local Discover sink list (#657): reversible, and independent of
-        // disable / the session-only update ignore.
-        h('div', { className: css.setConfirm },
-          h('div', { className: css.setLabel }, t('setBlocked')),
-          h('div', { className: css.setHint }, t('setBlockedHint')),
-          blockedNames.length === 0
-            ? h('div', { className: css.setBlockedEmpty }, t('blockedEmpty'))
-            : h('div', { className: css.setBlockedList },
-                ...blockedNames.map(name => h('div', { key: name, className: css.setBlockedRow },
-                  h('span', { className: css.setBlockedName, title: name }, name),
-                  h(Button, {
-                    variant: 'ghost',
-                    size: 'sm',
-                    disabled: blockBusy === name,
-                    onClick: () => { onUnblock(name) },
-                  }, t('setBlockedUnblock')),
-                )),
-              ),
-        ),
         row(
           t('setGithubProxy'),
           status?.githubProxyManaged === true
