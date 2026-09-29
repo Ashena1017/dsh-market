@@ -538,6 +538,7 @@ const hot = vi.hoisted(() => ({
   notes: {} as Record<string, string>,
   favorites: [] as string[],
   blocked: [] as string[],
+  updateExempt: [] as string[],
   /** Stands in for the buildEnv line of state.json; undefined = composition. */
   buildEnv: undefined as Record<string, string> | undefined,
   /** The live source the routes installed, so a test can read what a spawn would. */
@@ -563,6 +564,7 @@ vi.mock('../src/hot.ts', async (importOriginal) => ({
     channel: hot.channel, region: hot.region, regionAuto: hot.regionAuto,
     githubProxy: hot.githubProxy,
     notes: hot.notes, favorites: hot.favorites, blocked: hot.blocked,
+    updateExempt: hot.updateExempt,
     buildEnv: hot.buildEnv,
   }),
   // Carries `channel` because the real one does. A stand-in that silently
@@ -574,6 +576,7 @@ vi.mock('../src/hot.ts', async (importOriginal) => ({
     channel?: 'stable' | 'beta' | 'dev'; region?: 'global' | 'china'; regionAuto?: true
     githubProxy?: string
     notes?: Record<string, string>; favorites?: string[]; blocked?: string[]
+    updateExempt?: string[]
     buildEnv?: Record<string, string>
   }) => {
     hot.disabled = new Set(state.disabled)
@@ -587,6 +590,7 @@ vi.mock('../src/hot.ts', async (importOriginal) => ({
     if (state.notes !== undefined) hot.notes = state.notes
     if (state.favorites !== undefined) hot.favorites = state.favorites
     if (state.blocked !== undefined) hot.blocked = state.blocked
+    if (state.updateExempt !== undefined) hot.updateExempt = state.updateExempt
   },
   listHotMounts: () => [...hot.mounts],
   hotMount: (_ctx: unknown, _dir: string, name: string) => {
@@ -830,6 +834,7 @@ beforeEach(() => {
   hot.notes = {}
   hot.favorites = []
   hot.blocked = []
+  hot.updateExempt = []
   hot.buildEnv = undefined
   hot.buildEnvSource = undefined
   regionProbe.pending = null
@@ -6476,6 +6481,48 @@ describe('blocked plugins (#657)', () => {
     const add = await bed.dispatch('POST', '/dsh-market/block', { name: 'dsh-one-more', blocked: true })
     expect(add.status).toBe(400)
     expect(hot.blocked).toHaveLength(500)
+  })
+})
+
+describe('persistent update reminders (#728)', () => {
+  it('adds and removes a package and returns the list from GET /installed', async () => {
+    const add = await bed.dispatch('POST', '/dsh-market/update-exempt', { name: 'dsh-loop', exempt: true })
+    expect(add.status).toBe(200)
+    expect(add.json.updateExempt).toEqual(['dsh-loop'])
+    expect(hot.updateExempt).toEqual(['dsh-loop'])
+
+    const listed = await bed.dispatch('GET', '/dsh-market/installed')
+    expect(listed.json.updateExempt).toEqual(['dsh-loop'])
+
+    const remove = await bed.dispatch('POST', '/dsh-market/update-exempt', { name: 'dsh-loop', exempt: false })
+    expect(remove.status).toBe(200)
+    expect(remove.json.updateExempt).toEqual([])
+    expect(hot.updateExempt).toEqual([])
+  })
+
+  it('rejects an empty name and a cross-origin write', async () => {
+    expect((await bed.dispatch('POST', '/dsh-market/update-exempt', { name: '', exempt: true })).status).toBe(400)
+    expect((await bed.dispatch('POST', '/dsh-market/update-exempt', { name: '  ', exempt: true })).status).toBe(400)
+    expect((await bed.dispatch('POST', '/dsh-market/update-exempt', { name: 'dsh-loop', exempt: true }, { crossOrigin: true })).status).toBe(403)
+    expect((await bed.dispatch('POST', '/dsh-market/update-exempt', { name: 'a'.repeat(300), exempt: true })).status).toBe(400)
+  })
+
+  it('a disable toggle does not clear the list', async () => {
+    fake.npm['dsh-loop'] = {
+      latest: '1.0.0',
+      versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } },
+    }
+    await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+    await bed.dispatch('POST', '/dsh-market/update-exempt', { name: 'dsh-notify', exempt: true })
+    await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-loop', enabled: false })
+    expect(hot.updateExempt).toEqual(['dsh-notify'])
+  })
+
+  it('rejects names beyond the cap', async () => {
+    hot.updateExempt = Array.from({ length: 500 }, (_, index) => `dsh-p-${index}`)
+    const add = await bed.dispatch('POST', '/dsh-market/update-exempt', { name: 'dsh-one-more', exempt: true })
+    expect(add.status).toBe(400)
+    expect(hot.updateExempt).toHaveLength(500)
   })
 })
 

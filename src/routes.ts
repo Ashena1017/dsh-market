@@ -16,7 +16,7 @@ import { load as loadYaml } from 'js-yaml'
 import { forgetCatalog, loadRegistry, pluginCategories } from './registry.ts'
 import { settingsNamespaceState } from './settings.ts'
 import {
-  buildEnvFromUnknown, cleanHotDir, hotMount, hotUnmount, listHotMounts, MAX_BLOCKED, MAX_BLOCKED_NAME, MAX_FAVORITES, MAX_NOTE,
+  buildEnvFromUnknown, cleanHotDir, hotMount, hotUnmount, listHotMounts, MAX_BLOCKED, MAX_BLOCKED_NAME, MAX_FAVORITES, MAX_NOTE, MAX_UPDATE_EXEMPT,
   mountClientOnlyDeps, purgeMarketState, readMarketState, writeMarketState,
 } from './hot.ts'
 import { createGroup, deleteGroup, removeFromGroups, renameGroup, setGroupMembers } from './groups.ts'
@@ -494,6 +494,9 @@ export function mountMarketRoutes(
     marketState.regionAuto = fresh.regionAuto
     marketState.favorites = fresh.favorites
     marketState.blocked = fresh.blocked
+    // Same list as blocked: a name written here must survive the next
+    // writer that saves `marketState` whole (#435, #728).
+    marketState.updateExempt = fresh.updateExempt
     marketState.githubProxy = fresh.githubProxy
     // Refreshed like the rest: a declaration this route dropped (#663) must
     // survive another writer's read-back, which is the whole point of this
@@ -2245,6 +2248,7 @@ export function mountMarketRoutes(
           notes: readMarketState(activeProfileDir).notes ?? {},
           favorites: readMarketState(activeProfileDir).favorites ?? [],
           blocked: readMarketState(activeProfileDir).blocked ?? [],
+          updateExempt: readMarketState(activeProfileDir).updateExempt ?? [],
           patch: { disables: patch.disables, forced: patch.forced, inserts: patch.inserts },
           patchDisabled: patchFlags.disabled,
           unbundled,
@@ -2981,6 +2985,57 @@ export function mountMarketRoutes(
 
     host.webServer.register({
       kind: 'exact',
+      path: '/dsh-market/update-exempt',
+      handler: async (request, response) => {
+        if (request.method !== 'POST') {
+          response.writeHead(405, { allow: 'POST' })
+          response.end()
+          return
+        }
+        if (!sameOrigin(request)) {
+          sendJson(response, 403, { error: 'untrusted origin' })
+          return
+        }
+        try {
+          await withMutationQueued(async () => {
+            const body = (await readJsonBody(request)) as { name?: unknown; exempt?: unknown } | null
+            const name = typeof body?.name === 'string' ? body.name.trim() : ''
+            if (name === '' || name.length > MAX_BLOCKED_NAME) {
+              sendJson(response, 400, { error: 'name is required / 需要 name' })
+              return
+            }
+            const state = readMarketState(activeProfileDir)
+            const updateExempt = [...(state.updateExempt ?? [])]
+            const wantExempt = body?.exempt === true
+            if (wantExempt) {
+              if (updateExempt.includes(name)) {
+                sendJson(response, 200, { ok: true, updateExempt })
+                return
+              }
+              if (updateExempt.length >= MAX_UPDATE_EXEMPT) {
+                sendJson(response, 400, {
+                  error: `update reminder list limit reached (${String(MAX_UPDATE_EXEMPT)}) / 不再提示已达上限（${String(MAX_UPDATE_EXEMPT)}）`,
+                })
+                return
+              }
+              updateExempt.push(name)
+            } else {
+              const index = updateExempt.indexOf(name)
+              if (index !== -1) updateExempt.splice(index, 1)
+            }
+            const fresh = readMarketState(activeProfileDir)
+            writeMarketState(activeProfileDir, { ...fresh, updateExempt })
+            refreshMarketState()
+            sendJson(response, 200, { ok: true, updateExempt })
+          })
+        } catch (error) {
+          sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }),
+
+    host.webServer.register({
+      kind: 'exact',
       path: '/dsh-market/groups',
       handler: async (request, response) => {
         if (request.method !== 'POST') {
@@ -3452,6 +3507,12 @@ sendJson(response, 200, { updates })
               if (blockedAt !== -1) {
                 marketBlocked.splice(blockedAt, 1)
                 if (!marketBlocked.includes(targetName)) marketBlocked.push(targetName)
+              }
+              const marketExempt = marketState.updateExempt ?? (marketState.updateExempt = [])
+              const exemptAt = marketExempt.indexOf(name)
+              if (exemptAt !== -1) {
+                marketExempt.splice(exemptAt, 1)
+                if (!marketExempt.includes(targetName)) marketExempt.push(targetName)
               }
             }
 
