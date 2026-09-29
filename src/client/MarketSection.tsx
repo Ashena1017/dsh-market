@@ -1175,15 +1175,18 @@ function ConfirmTerminalIcon() {
 
 /** execCommand only succeeds inside the click. writeText rejects later, after
  * Chrome has already dropped the user activation, so the textarea copy has
- * to happen before that promise. */
-function copyInstallCommandNow(text: string): boolean {
+ * to happen before that promise. The field stays inside the dialog; removing
+ * a focused node outside it would drop the keyboard onto document.body. */
+function copyInstallCommandNow(text: string, anchor: HTMLElement): boolean {
   const area = document.createElement('textarea')
   area.value = text
   area.setAttribute('readonly', '')
+  area.setAttribute('aria-hidden', 'true')
+  area.tabIndex = -1
   area.style.position = 'fixed'
   area.style.top = '0'
   area.style.left = '-9999px'
-  document.body.appendChild(area)
+  ;(anchor.parentElement ?? document.body).appendChild(area)
   area.select()
   let ok = false
   try {
@@ -1192,11 +1195,12 @@ function copyInstallCommandNow(text: string): boolean {
     ok = false
   }
   area.remove()
+  anchor.focus()
   return ok
 }
 
-function writeInstallCommand(text: string): Promise<void> {
-  const copiedNow = copyInstallCommandNow(text)
+function writeInstallCommand(text: string, anchor: HTMLElement): Promise<void> {
+  const copiedNow = copyInstallCommandNow(text, anchor)
   const write = navigator.clipboard?.writeText
   if (typeof write !== 'function') {
     return copiedNow ? Promise.resolve() : Promise.reject(new Error('copy failed'))
@@ -1230,8 +1234,8 @@ function ConfirmCopyButton({ text, label, copiedLabel }: { text: string, label: 
         type="button"
         className={css.confirmCopy}
         aria-label={copied ? copiedLabel : label}
-        onClick={() => {
-          void writeInstallCommand(text).then(markCopied, () => {})
+        onClick={(event) => {
+          void writeInstallCommand(text, event.currentTarget).then(markCopied, () => {})
         }}
       >
         {copied ? <IconCheckOutline16 size={14} /> : <IconCopyOutline16 size={14} />}

@@ -829,17 +829,40 @@ describe('MarketSection (jsdom)', () => {
     expect(screen.queryByText('dsh plugin install dsh-tui')).toBeNull()
   })
 
+  /** defineProperty is not covered by vi.unstubAllGlobals, so put the
+   * originals back or the next test inherits this clipboard. */
+  const stubCopy = (writeText: ReturnType<typeof vi.fn>, exec?: ReturnType<typeof vi.fn>) => {
+    const prevClip = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const prevExec = Object.getOwnPropertyDescriptor(document, 'execCommand')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    if (exec !== undefined) Object.defineProperty(document, 'execCommand', { configurable: true, writable: true, value: exec })
+    return () => {
+      if (prevClip !== undefined) Object.defineProperty(navigator, 'clipboard', prevClip)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+      if (exec !== undefined) {
+        if (prevExec !== undefined) Object.defineProperty(document, 'execCommand', prevExec)
+        else Reflect.deleteProperty(document, 'execCommand')
+      }
+    }
+  }
+
   it('copies the install command from its icon (#739)', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
-    stubTerminalPlugin()
-    render(<MarketSection {...props()} />)
-    await screen.findByText('dsh-tui')
-    fireEvent.click(screen.getByRole('button', { name: en.install }))
-    fireEvent.click(await screen.findByText(en.cmdDetails))
-    fireEvent.click(screen.getByRole('button', { name: en.cmdCopy }))
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('dsh plugin install dsh-tui'))
-    expect(await screen.findByRole('status')).toHaveProperty('textContent', en.cmdCopied)
+    const restore = stubCopy(writeText)
+    try {
+      stubTerminalPlugin()
+      render(<MarketSection {...props()} />)
+      await screen.findByText('dsh-tui')
+      fireEvent.click(screen.getByRole('button', { name: en.install }))
+      fireEvent.click(await screen.findByText(en.cmdDetails))
+      const copy = screen.getByRole('button', { name: en.cmdCopy })
+      fireEvent.click(copy)
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('dsh plugin install dsh-tui'))
+      expect(await screen.findByRole('status')).toHaveProperty('textContent', en.cmdCopied)
+      expect(document.activeElement).toBe(copy)
+    } finally {
+      restore()
+    }
   })
 
   it('falls back to execCommand inside the click when writeText rejects (#739)', async () => {
@@ -848,36 +871,46 @@ describe('MarketSection (jsdom)', () => {
       expect(copiedDuringClick).toBe(true)
       return Promise.reject(new Error('denied'))
     })
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     const exec = vi.fn(() => {
       copiedDuringClick = true
       return true
     })
-    Object.defineProperty(document, 'execCommand', { configurable: true, writable: true, value: exec })
-    stubTerminalPlugin()
-    render(<MarketSection {...props()} />)
-    await screen.findByText('dsh-tui')
-    fireEvent.click(screen.getByRole('button', { name: en.install }))
-    fireEvent.click(await screen.findByText(en.cmdDetails))
-    fireEvent.click(screen.getByRole('button', { name: en.cmdCopy }))
-    expect(await screen.findByRole('status')).toHaveProperty('textContent', en.cmdCopied)
-    expect(exec).toHaveBeenCalledWith('copy')
+    const restore = stubCopy(writeText, exec)
+    try {
+      stubTerminalPlugin()
+      render(<MarketSection {...props()} />)
+      await screen.findByText('dsh-tui')
+      fireEvent.click(screen.getByRole('button', { name: en.install }))
+      fireEvent.click(await screen.findByText(en.cmdDetails))
+      const copy = screen.getByRole('button', { name: en.cmdCopy })
+      fireEvent.click(copy)
+      expect(await screen.findByRole('status')).toHaveProperty('textContent', en.cmdCopied)
+      expect(exec).toHaveBeenCalledWith('copy')
+      expect(document.activeElement).toBe(copy)
+    } finally {
+      restore()
+    }
   })
 
   it('does not show copied when the clipboard and execCommand both fail (#739)', async () => {
     const writeText = vi.fn().mockRejectedValue(new Error('denied'))
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     const exec = vi.fn(() => false)
-    Object.defineProperty(document, 'execCommand', { configurable: true, writable: true, value: exec })
-    stubTerminalPlugin()
-    render(<MarketSection {...props()} />)
-    await screen.findByText('dsh-tui')
-    fireEvent.click(screen.getByRole('button', { name: en.install }))
-    fireEvent.click(await screen.findByText(en.cmdDetails))
-    fireEvent.click(screen.getByRole('button', { name: en.cmdCopy }))
-    await waitFor(() => expect(writeText).toHaveBeenCalled())
-    expect(screen.queryByRole('status')).toBeNull()
-    expect(exec).toHaveBeenCalledWith('copy')
+    const restore = stubCopy(writeText, exec)
+    try {
+      stubTerminalPlugin()
+      render(<MarketSection {...props()} />)
+      await screen.findByText('dsh-tui')
+      fireEvent.click(screen.getByRole('button', { name: en.install }))
+      fireEvent.click(await screen.findByText(en.cmdDetails))
+      const copy = screen.getByRole('button', { name: en.cmdCopy })
+      fireEvent.click(copy)
+      await waitFor(() => expect(writeText).toHaveBeenCalled())
+      expect(screen.queryByRole('status')).toBeNull()
+      expect(exec).toHaveBeenCalledWith('copy')
+      expect(document.activeElement).toBe(copy)
+    } finally {
+      restore()
+    }
   })
 
   it('offers the release a hold kept back, and installs it when asked (#635)', async () => {

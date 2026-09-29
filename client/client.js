@@ -7275,15 +7275,18 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 		}
 		/** execCommand only succeeds inside the click. writeText rejects later, after
 		* Chrome has already dropped the user activation, so the textarea copy has
-		* to happen before that promise. */
-		function copyInstallCommandNow(text) {
+		* to happen before that promise. The field stays inside the dialog; removing
+		* a focused node outside it would drop the keyboard onto document.body. */
+		function copyInstallCommandNow(text, anchor) {
 			const area = document.createElement("textarea");
 			area.value = text;
 			area.setAttribute("readonly", "");
+			area.setAttribute("aria-hidden", "true");
+			area.tabIndex = -1;
 			area.style.position = "fixed";
 			area.style.top = "0";
 			area.style.left = "-9999px";
-			document.body.appendChild(area);
+			(anchor.parentElement ?? document.body).appendChild(area);
 			area.select();
 			let ok = false;
 			try {
@@ -7292,10 +7295,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				ok = false;
 			}
 			area.remove();
+			anchor.focus();
 			return ok;
 		}
-		function writeInstallCommand(text) {
-			const copiedNow = copyInstallCommandNow(text);
+		function writeInstallCommand(text, anchor) {
+			const copiedNow = copyInstallCommandNow(text, anchor);
 			const write = navigator.clipboard?.writeText;
 			if (typeof write !== "function") return copiedNow ? Promise.resolve() : Promise.reject(/* @__PURE__ */ new Error("copy failed"));
 			return write.call(navigator.clipboard, text).then(() => void 0, () => {
@@ -7324,8 +7328,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				type: "button",
 				className: Market_module_css_default.confirmCopy,
 				"aria-label": copied ? copiedLabel : label,
-				onClick: () => {
-					writeInstallCommand(text).then(markCopied, () => {});
+				onClick: (event) => {
+					writeInstallCommand(text, event.currentTarget).then(markCopied, () => {});
 				},
 				children: copied ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconCheckOutline16, { size: 14 }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconCopyOutline16, { size: 14 })
 			})] });
