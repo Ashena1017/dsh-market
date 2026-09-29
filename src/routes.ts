@@ -38,7 +38,7 @@ import { applyBundleOrder, mergeOrder, readBundleRules, readBundleStack, validat
 import { applyPreset, deletePreset, listPresets, previewPreset, savePreset } from './presets.ts'
 import { createProfileSnapshot, DEFAULT_MAX_SNAPSHOTS, deleteSnapshot, listSnapshots, restoreSnapshot } from './snapshot.ts'
 import { trialValidate } from './trial.ts'
-import { codeloadAllowBuildsKey, findCatalogEntryForLocal, findInstalledAlias, gitCommitOfTarget, githubCommitOfTarget, githubTargetAtCommit, gitAllowBuildsKey, gitRefOfTarget, gitTargetAtCommit, gitUpdateTarget, hostedRepoKey, pinnedGitAllowBuildsKey, installTargetFor, isGenerationLink, isLocalSpec, NPM_NAME_RE, repoOfTarget, restoreBlockedByWorkspace, restoreTargetForLocal, workspaceProtocolDeps } from './sources.ts'
+import { catalogRepoKey, codeloadAllowBuildsKey, findCatalogEntryForLocal, findInstalledAlias, gitCommitOfTarget, githubCommitOfTarget, githubTargetAtCommit, gitAllowBuildsKey, gitRefOfTarget, gitTargetAtCommit, gitUpdateTarget, hostedRepoKey, lookupRepoFromUrl, pinnedGitAllowBuildsKey, installTargetFor, isGenerationLink, isLocalSpec, NPM_NAME_RE, repoOfTarget, restoreBlockedByWorkspace, restoreTargetForLocal, workspaceProtocolDeps } from './sources.ts'
 import { failureDetail, groupConflictsByOwner, isStaleUpdate, parseIgnoredBuilds, parsePrepareKey, parsePrepareNotAllowed, pnpmBlockedByOpenFiles, pnpmNeverStarted, RELEASE_AGE_OVERRIDE, removeDanglingHostBridge, retargetCollections, validateAddedPlugins, withHoistRecovery } from './install.ts'
 import { classifyPnpmFailure } from './pnpm-compat.ts'
 import { asChannel, CHANNELS, DIST_TAG, resolveChannel, type Channel } from './channels.ts'
@@ -1514,6 +1514,7 @@ export function mountMarketRoutes(
   async function updateCheckInputs(): Promise<{
     channelFor: Map<string, Channel>
     onlineSourceFor: Map<string, string>
+    catalogNpmByRepo: Map<string, string>
   }> {
     // Only the market itself follows the channel setting (see
     // MarketSettings.channel): a user opting into betas is volunteering to
@@ -1527,16 +1528,26 @@ export function mountMarketRoutes(
         .map(name => [name, channel] as const),
     )
     const onlineSourceFor = new Map<string, string>()
+    // Which registry name — if any — an archive-URL install may be updated
+    // through, keyed by the GitHub repo the archive came from (#768). Same
+    // failure semantics as below: a failed registry load leaves the map
+    // empty, and an empty map authorizes nothing.
+    const catalogNpmByRepo = new Map<string, string>()
     try {
       const registry = await loadRegistry()
       for (const [name, spec] of Object.entries(installed)) {
         const source = onlineSourceOf(registry.plugins, name, spec)
         if (source !== null) onlineSourceFor.set(name, source)
       }
+      for (const plugin of registry.plugins) {
+        if (plugin.npm === null || plugin.npm === undefined) continue
+        const repoKey = catalogRepoKey(plugin.url)
+        if (repoKey !== null) catalogNpmByRepo.set(repoKey, plugin.npm)
+      }
     } catch (error) {
       logEvent('warn', 'updates', `package source lookup failed — ${error instanceof Error ? error.message : String(error)}`)
     }
-    return { channelFor, onlineSourceFor }
+    return { channelFor, onlineSourceFor, catalogNpmByRepo }
   }
 
   /**
@@ -1667,8 +1678,8 @@ export function mountMarketRoutes(
           return
         }
         try {
-          const { channelFor, onlineSourceFor } = await updateCheckInputs()
-          const updates = await checkUpdates(config.profile, forceCheckFrom(request), activeProfileDir, channelFor, onlineSourceFor)
+          const { channelFor, onlineSourceFor, catalogNpmByRepo } = await updateCheckInputs()
+          const updates = await checkUpdates(config.profile, forceCheckFrom(request), activeProfileDir, channelFor, onlineSourceFor, catalogNpmByRepo)
           // `packages` carries the same objects the single-package endpoint
           // returns, so one parser serves both. Only updatable ones: a badge
           // wants the count, a panel wants the rows, and neither wants to
@@ -1714,8 +1725,8 @@ export function mountMarketRoutes(
             // The same inputs the market page builds, so a generation (#497)
             // or a catalog-matched local package answers here with the
             // release it can be compared against rather than with nothing.
-            const { channelFor, onlineSourceFor } = await updateCheckInputs()
-            const update = (await checkUpdates(config.profile, force, activeProfileDir, channelFor, onlineSourceFor))[name]
+            const { channelFor, onlineSourceFor, catalogNpmByRepo } = await updateCheckInputs()
+            const update = (await checkUpdates(config.profile, force, activeProfileDir, channelFor, onlineSourceFor, catalogNpmByRepo))[name]
             if (update === undefined) {
               sendJson(response, 404, { schema: UPDATE_API_V1_SCHEMA, error: 'plugin is not installed' })
               return
@@ -3342,7 +3353,7 @@ export function mountMarketRoutes(
         }
         try {
           const force = (request.url ?? '').includes('force=1')
-          const { channelFor, onlineSourceFor } = await updateCheckInputs()
+          const { channelFor, onlineSourceFor, catalogNpmByRepo } = await updateCheckInputs()
           // Migration hints are this listing's own business: the market page
           // is where "this could come from npm now" is offered, and no other
           // caller acts on it.
@@ -3357,7 +3368,7 @@ export function mountMarketRoutes(
           } catch (error) {
             logEvent('warn', 'updates', `package source lookup failed — ${error instanceof Error ? error.message : String(error)}`)
           }
-          const updates = await checkUpdates(config.profile, force, activeProfileDir, channelFor, onlineSourceFor)
+          const updates = await checkUpdates(config.profile, force, activeProfileDir, channelFor, onlineSourceFor, catalogNpmByRepo)
           for (const [name, migration] of sourceMigrationFor) {
             const status = updates[name]
             if (status !== undefined) updates[name] = { ...status, sourceMigration: migration }
@@ -3755,6 +3766,23 @@ sendJson(response, 200, { updates })
             // classification chooses rollback mechanics; it must not weaken
             // the existing registry target/downgrade validation.
             const usesNpmUpdateTarget = !restore && !isGit
+            // #768: an archive URL carries no registry identity, so
+            // name@<tag> would not update this install — it would replace it
+            // with whatever package shares its name. Only proceed when a
+            // catalog entry owns both the repo the archive came from and
+            // this name; anything else keeps the plugin exactly as it is.
+            if (usesNpmUpdateTarget && /^https?:/i.test(spec)) {
+              const repo = lookupRepoFromUrl(spec)
+              const repoKey = repo === null ? null : catalogRepoKey(repo)
+              const { catalogNpmByRepo } = await updateCheckInputs()
+              if (repoKey === null || catalogNpmByRepo.get(repoKey) !== name) {
+                logEvent('warn', 'updates', `refused update for ${name}: no catalog entry owns both the archive's repo and this name (${spec})`)
+                sendJson(response, 400, {
+                  error: `不能更新 ${name}：它是从一个压缩包链接装的，市场里的同名插件是另一个包，按名字更新会把它整个换掉。插件没有改动；想换成市场版本，先卸载它，再从市场安装。 / Cannot update ${name}: it was installed from an archive link, and the market's same-named plugin is a different package, so updating by name would replace it. Nothing was changed. To switch, uninstall it first, then install from the market.`,
+                })
+                return
+              }
+            }
             // `@latest` was hardcoded, so a beta subscriber would have been
             // told an update existed and then handed the stable build. The
             // dist-tag has to follow the same setting the offer came from.

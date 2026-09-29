@@ -3244,7 +3244,12 @@ describe('update flow — no npm publishing required', () => {
     expect(hot.disabled.has('dsh-loop')).toBe(false)
   })
 
-  it('does not offer exact rollback for a replaceable release-archive URL', async () => {
+  it('does not offer exact rollback when an authorized release-archive update switches to npm', async () => {
+    // #768: updating a Release-archive install through npm is a source
+    // switch, so the catalog must vouch for it — an entry that owns both the
+    // tarball's repo and this exact npm name. This test is that case: the
+    // entry gets npm 'dsh-prebuilt', the update may proceed, and the old
+    // release URL still cannot serve as an exact rollback identity.
     const oldUrl = 'https://github.com/o/dsh-prebuilt/releases/download/v1.0.0/dsh-prebuilt.tgz'
     const hostPeerDir = join(fake.profileDir, 'node_modules', '@deepseek-ai', 'dsh-settings')
     mkdirSync(hostPeerDir, { recursive: true })
@@ -3280,9 +3285,15 @@ describe('update flow — no npm publishing required', () => {
       },
     }
     vi.stubGlobal('fetch', () => Promise.resolve(new Response(JSON.stringify({ version: '2.0.0' }), { status: 200 })))
+    const authorized = {
+      ...REGISTRY,
+      plugins: REGISTRY.plugins.map(plugin => plugin.name === 'dsh-prebuilt' ? { ...plugin, npm: 'dsh-prebuilt' } : plugin),
+    }
+    registryModule.loadRegistry.mockImplementation(() => Promise.resolve(authorized))
 
     const callsBefore = fake.calls.length
     const updated = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-prebuilt' })
+    registryModule.loadRegistry.mockImplementation(() => Promise.resolve(REGISTRY))
     expect(updated.status).toBe(200)
     expect(updated.json.compatibility).toMatchObject({ code: 'soft-incompatible' })
     expect(updated.json.compatibility.rollbackId).toBeUndefined()
@@ -3293,6 +3304,77 @@ describe('update flow — no npm publishing required', () => {
     expect(installedSpec('dsh-prebuilt')).not.toBe(oldUrl)
     expect(readFileSync(join(packageDir, 'index.js'), 'utf8')).toBe('incompatible-registry-bytes')
     expect((JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')) as { version?: string }).version).toBe('2.0.0')
+  })
+
+  it('refuses an unauthorized release-archive update that would switch the plugin to a same-named npm package (#768)', async () => {
+    // The catalog entry for this repo has npm: null, so nothing vouches that
+    // the npm package 'dsh-prebuilt' is the same plugin the user installed
+    // from the Release tarball. Updating by name would replace the install
+    // wholesale — refuse and keep the installed plugin untouched.
+    const oldUrl = 'https://github.com/o/dsh-prebuilt/releases/download/v1.0.0/dsh-prebuilt.tgz'
+    const hostPeerDir = join(fake.profileDir, 'node_modules', '@deepseek-ai', 'dsh-settings')
+    mkdirSync(hostPeerDir, { recursive: true })
+    writeFileSync(join(hostPeerDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-settings', version: '0.1.0-rc.6' }))
+    writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify({
+      dependencies: { 'dsh-loop': '^1.0.0', 'dsh-prebuilt': oldUrl },
+    }))
+    const packageDir = join(fake.profileDir, 'node_modules', 'dsh-prebuilt')
+    mkdirSync(packageDir, { recursive: true })
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({
+      name: 'dsh-prebuilt', version: '1.0.0', dsh: {}, main: 'index.js',
+    }))
+    writeFileSync(join(packageDir, 'index.js'), 'old-release-bytes')
+    writeFileSync(join(fake.profileDir, 'pnpm-lock.yaml'), `lockfileVersion: '9.0'\n# exact release source: ${oldUrl}\n`)
+    fake.tarballs[oldUrl] = {
+      name: 'dsh-prebuilt',
+      manifest: { name: 'dsh-prebuilt', version: '1.0.0', dsh: {}, main: 'index.js' },
+      artifacts: ['index.js'],
+      artifactContents: { 'index.js': 'old-release-bytes' },
+    }
+    fake.npm['dsh-prebuilt'] = {
+      latest: '2.0.0',
+      versions: {
+        '2.0.0': {
+          manifest: {
+            name: 'dsh-prebuilt', dsh: {}, main: 'index.js',
+            peerDependencies: { '@deepseek-ai/dsh-settings': '^0.1.0-rc.7' },
+          },
+          artifacts: ['index.js'],
+          artifactContents: { 'index.js': 'incompatible-registry-bytes' },
+        },
+      },
+    }
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response(JSON.stringify({ version: '2.0.0' }), { status: 200 })))
+
+    const callsBefore = fake.calls.length
+    const updated = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-prebuilt' })
+
+    expect(updated.status).toBe(400)
+    expect(String(updated.json.error)).toContain(' / ')
+    expect(String(updated.json.error)).toMatch(/uninstall|卸载/)
+    expect(fake.calls.length).toBe(callsBefore)
+    expect(installedSpec('dsh-prebuilt')).toBe(oldUrl)
+    expect(readFileSync(join(packageDir, 'index.js'), 'utf8')).toBe('old-release-bytes')
+    expect((JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')) as { version?: string }).version).toBe('1.0.0')
+  })
+
+  it('does not list an update for an unauthorized release-archive install (#768)', async () => {
+    const oldUrl = 'https://github.com/o/dsh-prebuilt/releases/download/v1.0.0/dsh-prebuilt.tgz'
+    const manifestPath = join(fake.profileDir, 'package.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.dependencies['dsh-prebuilt'] = oldUrl
+    writeFileSync(manifestPath, JSON.stringify(manifest))
+    const packageDir = join(fake.profileDir, 'node_modules', 'dsh-prebuilt')
+    mkdirSync(packageDir, { recursive: true })
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({
+      name: 'dsh-prebuilt', version: '1.0.0', dsh: {}, main: 'index.js',
+    }))
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response(JSON.stringify({ version: '2.0.0' }), { status: 200 })))
+
+    const page = await bed.dispatch('GET', '/dsh-market/updates')
+
+    expect(page.status).toBe(200)
+    expect(page.json.updates['dsh-prebuilt']).toMatchObject({ updateAvailable: false, latest: null })
   })
 
   it('does not guess an unsupported protocol source into an npm rollback', async () => {

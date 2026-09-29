@@ -607,3 +607,66 @@ describe('updateAvailable means NEWER, and only that', () => {
     } finally { vi.unstubAllGlobals(); rmSync(dir, { recursive: true, force: true }) }
   })
 })
+
+describe('checkUpdates — URL installs and catalog authorization (#768)', () => {
+  // A Release-archive or plain-URL install reaches the npm fallback by name
+  // alone. #768 is what happens when the registry hosts a DIFFERENT plugin
+  // under that same name: the fallback offered it as an update, and applying
+  // it replaced the tarball install with the registry package. The fallback
+  // now needs the catalog to vouch that this repo's npm package IS this
+  // installed name before it may compare against npm.
+  function urlProfile(spec: string, version = '1.0.0'): string {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-updates-768-'))
+    mkdirSync(join(dir, 'node_modules', 'themer'), { recursive: true })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { themer: spec } }))
+    writeFileSync(join(dir, 'node_modules', 'themer', 'package.json'), JSON.stringify({ name: 'themer', version }))
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n')
+    return dir
+  }
+
+  function stubNpmLatest(version: string): { hits: () => number } {
+    let npmHits = 0
+    vi.stubGlobal('fetch', () => {
+      npmHits += 1
+      return Promise.resolve(new Response(JSON.stringify({ version }), { status: 200 }))
+    })
+    return { hits: () => npmHits }
+  }
+
+  it('does not offer a registry same-name package to a release-archive install (#768)', async () => {
+    const dir = urlProfile('https://github.com/o/themer/releases/download/v1.0.0/themer.tgz')
+    const npm = stubNpmLatest('9.9.9')
+    try {
+      const row = (await checkUpdates('web', true, dir, new Map(), new Map(), new Map()))['themer']
+      expect(npm.hits()).toBe(0)
+      expect(row).toMatchObject({ kind: 'npm', current: '1.0.0', latest: null, updateAvailable: false })
+    } finally { vi.unstubAllGlobals(); rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('still checks npm when the catalog maps that exact repo to this installed name', async () => {
+    // The catalog vouches that `o/themer` ships as the npm package `themer`,
+    // so a tarball of that repo updating through npm stays the same source
+    // instead of swapping to whatever else answers to the name.
+    const dir = urlProfile('https://github.com/o/themer/releases/download/v1.0.0/themer.tgz')
+    const npm = stubNpmLatest('9.9.9')
+    try {
+      const catalogNpmByRepo = new Map([['o/themer', 'themer']])
+      const row = (await checkUpdates('web', true, dir, new Map(), new Map(), catalogNpmByRepo))['themer']
+      expect(npm.hits()).toBeGreaterThan(0)
+      expect(row).toMatchObject({ kind: 'npm', current: '1.0.0', latest: '9.9.9', updateAvailable: true })
+    } finally { vi.unstubAllGlobals(); rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('does not fall back to npm for a tarball served from outside GitHub', async () => {
+    // No repo identity at all, so no catalog entry can vouch for it. The
+    // answer is "no update" — never "whatever the registry has under this
+    // name", which is the #768 replacement in its purest form.
+    const dir = urlProfile('https://files.example.com/themer-1.0.0.tgz')
+    const npm = stubNpmLatest('9.9.9')
+    try {
+      const row = (await checkUpdates('web', true, dir, new Map(), new Map(), new Map([['o/themer', 'themer']])))['themer']
+      expect(npm.hits()).toBe(0)
+      expect(row).toMatchObject({ kind: 'npm', current: '1.0.0', latest: null, updateAvailable: false })
+    } finally { vi.unstubAllGlobals(); rmSync(dir, { recursive: true, force: true }) }
+  })
+})
