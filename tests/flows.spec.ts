@@ -690,6 +690,19 @@ vi.mock('../src/region-probe.ts', async (importOriginal) => {
   }
 })
 
+// -------------------------------------------------- runtime gate facts (#758)
+// The peer gate reads the runtime version through `defaultHostRuntimeFacts`.
+// Left real, a dev machine with a locatable dsh (repo checked out inside an
+// install, say) arms the gate for every fixture carrying an
+// `@deepseek-ai/dsh-*` peer and flips old tests there while CI stays green.
+// Pinned here the facts are a latch: null by default (the CI condition —
+// the gate stands aside), a version when a test opts in.
+const gateFacts = vi.hoisted(() => ({ runtimeVersion: null as string | null }))
+vi.mock('../src/verify.ts', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/verify.ts')>(),
+  defaultHostRuntimeFacts: () => ({ runtimeVersion: gateFacts.runtimeVersion, exemptions: {} }),
+}))
+
 // ---------------------------------------------------------------- testbed
 import { marketVersion, mountMarketRoutes } from '../src/routes.ts'
 import { RELEASE_AGE_OVERRIDE } from '../src/install.ts'
@@ -833,6 +846,7 @@ beforeEach(() => {
   hot.buildEnv = undefined
   hot.buildEnvSource = undefined
   regionProbe.pending = null
+  gateFacts.runtimeVersion = null
   hot.failNext = false
   bed = createTestbed()
   // The install route asks the registry for `latest` before a fresh npm add
@@ -1710,6 +1724,58 @@ describe('install flow', () => {
     // The FIRST attempt keeps pnpm's default: a plugin whose peers really do
     // live on npm must still get them. The flag is a recovery, not a policy.
     expect(fake.calls[0]?.includes('--config.auto-install-peers=false')).toBe(false)
+  })
+
+  it('installs a peer-incompatible plugin without hot-mounting it into the running host (#758)', async () => {
+    // The host's own boot gate would skip this plugin on every boot (#757).
+    // Hot-mounting it right after install sidesteps that verdict inside the
+    // very process the market runs in, so the install path checks the same
+    // gate first: the install succeeds, the live mount waits.
+    fake.npm['dsh-loop'] = {
+      latest: '1.2.0',
+      versions: {
+        '1.2.0': {
+          manifest: { dsh: {}, main: 'lib/index.js', peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' } },
+          artifacts: ['lib/index.js'],
+        },
+      },
+    }
+    gateFacts.runtimeVersion = '0.2.0'
+    // The real plugin-manager records the new install in the profile bundles;
+    // the fake pnpm only does it when asked (same flag #65 uses).
+    fake.profileBundleOnNextAdd = 'dsh-loop'
+
+    const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+
+    expect(r.status).toBe(200)
+    expect(hot.mounts).not.toContain('dsh-loop')
+    // The activation verdict tells the truth instead of promising a restart.
+    expect(r.json.activation['dsh-loop']?.state).toBe('incompatible')
+  })
+
+  it('refuses to enable a peer-incompatible plugin and names the way out (#758)', async () => {
+    fake.npm['dsh-loop'] = {
+      latest: '1.2.0',
+      versions: {
+        '1.2.0': {
+          manifest: { dsh: {}, main: 'lib/index.js', peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' } },
+          artifacts: ['lib/index.js'],
+        },
+      },
+    }
+    gateFacts.runtimeVersion = '0.2.0'
+    await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+
+    const on = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-loop', enabled: true })
+
+    expect(on.status).toBe(409)
+    expect(on.json.incompatible).toBe(true)
+    expect(on.json.error).toMatch(/开了也不会生效/)
+    // The runtime already outruns the plugin's cap — the remedy must not
+    // send the user off to upgrade dsh (#758).
+    expect(on.json.error).toMatch(/升级 dsh 解决不了/)
+    expect(on.json.error).toMatch(/upgrading dsh will not help/)
+    expect(hot.mounts).not.toContain('dsh-loop')
   })
 
   it('rolls back manifest residue when the add fails after pnpm wrote package.json (#65)', async () => {
