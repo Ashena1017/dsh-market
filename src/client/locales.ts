@@ -474,6 +474,10 @@ export const zh = {
   brokenPluginTitle: '{0} 更新失败后被移除了',
   brokenPluginBody: 'DSH 正在运行时无法更新，而更新前的版本也已经损坏。为避免下次启动卡住，市场把它从 profile 里移除。插件目录还在原处，退出 DSH 后重新安装即可。',
   brokenPluginAction: '查找这个插件',
+  // Says the message goes away and nothing else does. The plugin is still
+  // uninstalled and its directory is still on disk — a button that read as a
+  // repair would send the user away from the one thing that fixes it.
+  brokenPluginDismiss: '不再显示这条',
   viewReplacement: '查看替代品',
   installReplacement: '安装替代品',
   replacementHint: '目录建议改用',
@@ -1162,6 +1166,10 @@ export const en: Record<MarketKey, string> = {
   brokenPluginTitle: '{0} was removed after a failed update',
   brokenPluginBody: 'The running DSH blocked the update, and the version it was replacing was already damaged. The market removed it from the profile so the next start does not fail. Its directory is untouched — quit DSH and install it again.',
   brokenPluginAction: 'Find this plugin',
+  // "Stop showing this", deliberately not "Dismiss" alone and never anything
+  // that implies the plugin is sorted: the same notice's other button is the
+  // one that brings the plugin back, and it is still on screen.
+  brokenPluginDismiss: 'Stop showing this',
   viewReplacement: 'View replacement',
   installReplacement: 'Install replacement',
   replacementHint: 'Catalog suggests',

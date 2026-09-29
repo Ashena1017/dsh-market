@@ -22,6 +22,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dump } from 'js-yaml'
 import { mountMarketRoutes, type MarketHost } from '../src/routes.ts'
 import { sameOrigin } from '../src/http.ts'
+import { readMarketState, writeMarketState } from '../src/hot.ts'
 import * as orderApi from '../src/order.ts'
 import type { PluginCommandRuntime } from '../src/dsh-cli.ts'
 
@@ -513,6 +514,155 @@ describe('GET /dsh-market/installed — local repository evidence', () => {
     })
   })
 })
+
+describe('POST /dsh-market/dismiss-broken (#763)', () => {
+  // #763: the removed-declaration notice is durable on purpose — it is the only
+  // thing left that can say why a plugin vanished. But when the plugin is gone
+  // from the catalog too, the one action it offered ("Find this plugin")
+  // searches for nothing, and the notice is a banner no user can remove. The
+  // entry has to stay explainable AND escapable: the user is allowed to stop
+  // being told, without the market pretending the plugin was repaired.
+
+  const BROKEN = { reason: 'incomplete-build-locked', at: '2026-09-29T00:00:00.000Z' } as const
+
+  /** Seed two notices on disk, then re-mount so the routes read them at boot. */
+  function seedBroken(a: string, b: string): void {
+    writeStandardProfile()
+    writeMarketState(dir, {
+      disabled: new Set(), groups: {}, groupOrder: [],
+      brokenPlugins: {
+        [a]: { spec: 'github:o/alpha', ...BROKEN },
+        [b]: { spec: 'github:o/beta', ...BROKEN },
+      },
+    })
+    routes = mount().routes
+  }
+
+  const listed = async (): Promise<Record<string, unknown>> =>
+    jsonBody(await hit(routes, '/dsh-market/installed', { method: 'GET', url: '/dsh-market/installed' }))
+      .brokenPlugins as Record<string, unknown>
+
+  it('removes only the named notice and leaves the others standing', async () => {
+    seedBroken('dsh-alpha', 'dsh-beta')
+    expect(Object.keys(await listed()).sort()).toEqual(['dsh-alpha', 'dsh-beta'])
+
+    const res = await hit(routes, '/dsh-market/dismiss-broken', post('/dsh-market/dismiss-broken', { name: 'dsh-alpha' }))
+
+    expect(res.status).toBe(200)
+    expect(jsonBody(res)).toMatchObject({ ok: true })
+    // The other notice is a different plugin's absence and still needs saying.
+    expect(Object.keys(await listed())).toEqual(['dsh-beta'])
+    // ...and the same on disk, not only in the reply.
+    expect(Object.keys(readMarketState(dir).brokenPlugins ?? {})).toEqual(['dsh-beta'])
+  })
+
+  it('survives a reload, so dismissing is not undone by the next start (#763)', async () => {
+    // The reporter refreshed the page, restarted DSH, updated the market itself
+    // and installed other plugins: the notice was still there. This is the half
+    // a reply-only fix would miss — the dismissal has to be persisted, not held
+    // in the in-memory state the request happened to touch.
+    seedBroken('dsh-alpha', 'dsh-beta')
+    await hit(routes, '/dsh-market/dismiss-broken', post('/dsh-market/dismiss-broken', { name: 'dsh-alpha' }))
+
+    // A fresh mount is a fresh boot reading state.json: nothing in memory.
+    routes = mount().routes
+    expect(Object.keys(await listed())).toEqual(['dsh-beta'])
+    expect('dsh-alpha' in readMarketState(dir).brokenPlugins!).toBe(false)
+  })
+
+  it('keeps the reinstall auto-clear contract working alongside it (#663)', async () => {
+    // Two ways an entry leaves this map, and they must not fight: the market
+    // drops it when the plugin comes back, the user drops it when they stop
+    // wanting to hear about it. A dismiss must not resurrect a notice that
+    // install already cleared, and must not be blocked by one.
+    seedBroken('dsh-alpha', 'dsh-beta')
+    await hit(routes, '/dsh-market/dismiss-broken', post('/dsh-market/dismiss-broken', { name: 'dsh-alpha' }))
+
+    const res = await hit(routes, '/dsh-market/dismiss-broken', post('/dsh-market/dismiss-broken', { name: 'dsh-beta' }))
+
+    // The last notice cleared must not leave an empty object behind claiming
+    // there is something broken: the notice is driven by keys existing.
+    expect(res.status).toBe(200)
+    expect(jsonBody(res)).toMatchObject({ ok: true, brokenPlugins: {} })
+    expect(await listed()).toEqual({})
+    expect(readMarketState(dir).brokenPlugins).toBeUndefined()
+    expect('brokenPlugins' in readRawState()).toBe(false)
+  })
+
+  it('is idempotent and never invents a notice for a name that has none', async () => {
+    seedBroken('dsh-alpha', 'dsh-beta')
+    await hit(routes, '/dsh-market/dismiss-broken', post('/dsh-market/dismiss-broken', { name: 'dsh-alpha' }))
+
+    // Dismissing twice must be a no-op, not a second write that could race.
+    const again = await hit(routes, '/dsh-market/dismiss-broken', post('/dsh-market/dismiss-broken', { name: 'dsh-alpha' }))
+
+    expect(again.status).toBe(200)
+    expect(jsonBody(again)).toMatchObject({ ok: true })
+    // A name that was never broken is not an error either: the client and the
+    // user can both be out of date, and refusing would strand the button.
+    const absent = await hit(routes, '/dsh-market/dismiss-broken', post('/dsh-market/dismiss-broken', { name: 'dsh-never-existed' }))
+    expect(absent.status).toBe(200)
+    expect(Object.keys(await listed())).toEqual(['dsh-beta'])
+  })
+
+  it('refuses a cross-origin dismiss and validates the name', async () => {
+    seedBroken('dsh-alpha', 'dsh-beta')
+
+    const cross = await hit(routes, '/dsh-market/dismiss-broken', {
+      method: 'POST', url: '/dsh-market/dismiss-broken', origin: 'http://evil.example', host: HOST, body: { name: 'dsh-alpha' },
+    })
+    expect(cross.status).toBe(403)
+    expect(jsonBody(cross)).toEqual({ error: 'untrusted origin' })
+
+    for (const body of [null, {}, { name: '' }, { name: '   ' }, { name: 42 }, { name: 'x'.repeat(215) }]) {
+      const res = await hit(routes, '/dsh-market/dismiss-broken', post('/dsh-market/dismiss-broken', body))
+      expect(res.status).toBe(400)
+    }
+    // A rejected request must not have removed anything.
+    expect(Object.keys(await listed()).sort()).toEqual(['dsh-alpha', 'dsh-beta'])
+  })
+
+  it('answers GET with 405 rather than pretending the notice is dismissable that way', async () => {
+    seedBroken('dsh-alpha', 'dsh-beta')
+    const res = await hit(routes, '/dsh-market/dismiss-broken', { method: 'GET', url: '/dsh-market/dismiss-broken' })
+    expect(res.status).toBe(405)
+    expect(res.headers.allow).toBe('POST')
+  })
+
+  it('does not touch the leftover directory or the rest of the state (#763)', async () => {
+    // The notice explains an absence; dismissing it is a statement about the
+    // message, not a repair. Deleting the directory here would destroy the
+    // only thing the user can reinstall from, and would make "dismiss" mean
+    // two different things to the profile.
+    seedBroken('dsh-alpha', 'dsh-beta')
+    const leftover = join(dir, 'node_modules', 'dsh-alpha')
+    mkdirSync(leftover, { recursive: true })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'web-profile', dependencies: { 'dsh-beta': '^1.0.0' } }))
+
+    await hit(routes, '/dsh-market/dismiss-broken', post('/dsh-market/dismiss-broken', { name: 'dsh-alpha' }))
+
+    expect(existsSync(leftover)).toBe(true)
+    // The profile's own declarations are not this route's business either.
+    expect(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).dependencies).toEqual({ 'dsh-beta': '^1.0.0' })
+  })
+
+  it('records the dismissal in the log without claiming the plugin was fixed', async () => {
+    // log.ndjson is the durable record of what the market did (#663). Wording
+    // matters here: "repaired" or "reinstalled" would be a false statement the
+    // user reads later, when they open the very directory this left in place.
+    seedBroken('dsh-alpha', 'dsh-beta')
+    await hit(routes, '/dsh-market/dismiss-broken', post('/dsh-market/dismiss-broken', { name: 'dsh-alpha' }))
+
+    const res = await hit(routes, '/dsh-market/logs', { method: 'GET', url: '/dsh-market/logs' })
+    expect(res.body).toContain('dsh-alpha')
+    expect(res.body).not.toMatch(/repaired|已修复|reinstalled|已重装/)
+  })
+})
+
+/** Raw state.json on disk, so a test can assert a key is absent, not just empty. */
+function readRawState(): Record<string, unknown> {
+  return JSON.parse(readFileSync(join(dir, '.dsh-market', 'state.json'), 'utf8')) as Record<string, unknown>
+}
 
 describe('POST /dsh-market/bundle-order', () => {
   it('applies a valid community reorder: 200 with the merged stack, manifest rewritten', async () => {

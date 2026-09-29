@@ -2059,6 +2059,15 @@ export function MarketSection(props: MarketSectionProps) {
    */
   const [brokenPlugins, setBrokenPlugins] = useState<Record<string, { spec?: string; reason?: string }>>({})
   const brokenPluginNames = useMemo(() => Object.keys(brokenPlugins), [brokenPlugins])
+  const [dismissBrokenError, setDismissBrokenError] = useState<string | null>(null)
+  /** The route answers with the whole remaining map, so one reply settles every row. */
+  type DismissBrokenReply = { ok?: unknown; brokenPlugins?: unknown; error?: unknown }
+  /**
+   * Each reply carries the whole remaining map, so a late answer to an earlier
+   * click would restore a notice the user has already put away (#763). Only the
+   * newest dismiss is allowed to write.
+   */
+  const dismissBrokenGen = useRef(0)
   const [envFixing, setEnvFixing] = useState(false)
   const [envFailed, setEnvFailed] = useState(false)
   const [bootId, setBootId] = useState<string | null>(null)
@@ -3579,6 +3588,60 @@ export function MarketSection(props: MarketSectionProps) {
         setUpdateExemptError(String(error))
       })
   }, [updateExemptSet, updateExemptNames, t])
+
+  /**
+   * Stop showing one removed-declaration notice (#763).
+   *
+   * The notice is durable on purpose — it is the only thing left that says why
+   * a plugin vanished — but the reporter's plugin was no longer in the catalog,
+   * so the search it offered found nothing and the banner outlived every other
+   * action. Hiding it says nothing about the plugin: the declaration stays
+   * dropped and the directory stays where it is, which is why the reply's
+   * remaining map is applied and nothing else is touched.
+   *
+   * On failure the notice comes BACK. A dismiss that silently did nothing is
+   * worse than having no button: the user would go on believing they had been
+   * told the truth about their own profile.
+   */
+  const dismissBrokenPlugin = useCallback((name: string) => {
+    const gen = ++dismissBrokenGen.current
+    const previous = brokenPlugins
+    setDismissBrokenError(null)
+    // Optimistic, and reverted on any failure below.
+    setBrokenPlugins((current) => {
+      if (current[name] === undefined) return current
+      const next = { ...current }
+      delete next[name]
+      return next
+    })
+    fetch(api('/dsh-market/dismiss-broken'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+      .then(async (res) => {
+        const text = await res.text()
+        let body: DismissBrokenReply | null = null
+        if (text !== '') {
+          try { body = JSON.parse(text) as DismissBrokenReply } catch { /* non-JSON */ }
+        }
+        return { status: res.status, body }
+      })
+      .then(({ status, body }) => {
+        if (gen !== dismissBrokenGen.current) return
+        if (status === 200 && body?.ok === true && isRecordOfRecords(body.brokenPlugins)) {
+          setBrokenPlugins(body.brokenPlugins)
+          return
+        }
+        setBrokenPlugins(previous)
+        setDismissBrokenError(typeof body?.error === 'string' ? body.error : t('toggleFail'))
+      })
+      .catch((error: unknown) => {
+        if (gen !== dismissBrokenGen.current) return
+        setBrokenPlugins(previous)
+        setDismissBrokenError(String(error))
+      })
+  }, [brokenPlugins, t])
 
   const clearStaleFavorites = useCallback(() => {
     if (favoriteStale.length === 0) return
@@ -5361,13 +5424,32 @@ export function MarketSection(props: MarketSectionProps) {
                 </div>
                 {/* Same road the replacement hint takes: search for it and
                     land on the catalog, where Install does the right thing. */}
+                {/* Same road the replacement hint takes: search for it and
+                    land on the catalog, where Install does the right thing. */}
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => { setCat('all'); setQ(name); setTab('discover') }}
                 >{t('brokenPluginAction')}</Button>
+                {/* A second, quieter way out (#763): the plugin may be gone from
+                    the catalog too, and then the search above finds nothing and
+                    the user has no way to make the banner stop. Ghost, because
+                    hiding a message is not one of the two things they may have
+                    come here to do. */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => dismissBrokenPlugin(name)}
+                >{t('brokenPluginDismiss')}</Button>
               </div>
             ))}
+            {/* A dismiss that did not take says so here, next to the notice it
+                belongs to, and the notice is still on screen to read. */}
+            {dismissBrokenError !== null && (
+              <div className={css.brokenPluginItem} role="alert">
+                <span className={css.brokenPluginText}>{dismissBrokenError}</span>
+              </div>
+            )}
           </div>
         )}
       </div>
