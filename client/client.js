@@ -12866,7 +12866,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 												className: Market_module_css_default.cmd,
 												children: confirming.install
-											}), confirming.install !== "" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmCopyButton, {
+											}), typeof confirming.install === "string" && confirming.install !== "" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmCopyButton, {
 												text: confirming.install,
 												label: t("cmdCopy"),
 												copiedLabel: t("cmdCopied")

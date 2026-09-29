@@ -6489,7 +6489,7 @@ export function MarketSection(props: MarketSectionProps) {
           >
             <div className={css.confirmCmd}>
               <div className={css.cmd}>{confirming.install}</div>
-              {confirming.install !== '' && (
+              {typeof confirming.install === 'string' && confirming.install !== '' && (
                 <ConfirmCopyButton text={confirming.install} label={t('cmdCopy')} copiedLabel={t('cmdCopied')} />
               )}
             </div>
