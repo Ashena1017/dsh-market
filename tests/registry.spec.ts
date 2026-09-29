@@ -250,6 +250,28 @@ describe('loadRegistry download regions', () => {
     await expect(loadRegistry('china')).rejects.toThrow(/4 attempts/)
   })
 
+  it('keeps the primary source\'s own reason instead of the fallback\'s (#750)', async () => {
+    // The report: the primary was failing for a reason worth acting on (DNS,
+    // refusal, 404) while the fallback timed out, and the message named only
+    // the timeout — the one failure the user cannot act on, from a mirror they
+    // never chose. Which source said what IS the diagnosis, so every failed
+    // source has to appear in it.
+    byUrl([
+      [/mirrors\.cloud\.tencent\.com/, new Error('getaddrinfo ENOTFOUND mirrors.cloud.tencent.com')],
+      [/awesome-dsh-plugin\.com/, new Error('no new data for 15s while downloading the catalog (received 4096 bytes)')],
+    ])
+    const message = await loadRegistry('china').then(
+      () => { throw new Error('expected the whole list to fail') },
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    )
+    // The last failure keeps the leading slot (that is what the client shows),
+    // and the primary's reason is in there too, not discarded.
+    expect(message).toContain('no new data for 15s while downloading the catalog')
+    expect(message).toContain('earlier:')
+    expect(message).toContain('getaddrinfo ENOTFOUND mirrors.cloud.tencent.com')
+    expect(message.indexOf('earlier:')).toBeLessThan(message.indexOf('getaddrinfo ENOTFOUND'))
+  })
+
   it('never sends one origin the validator another one issued', async () => {
     // A validator is scoped to the URL that issued it. Carried across a
     // region switch it could earn a 304 from an origin whose body we have

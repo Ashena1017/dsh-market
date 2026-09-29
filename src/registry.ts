@@ -230,6 +230,17 @@ export async function loadRegistry(region: Region = activeRegion()): Promise<Reg
   const started = Date.now()
   let last: unknown
   let attempts = 0
+  /**
+   * Every source that failed, in order (#750).
+   *
+   * Only the LAST failure used to be reported, so a primary source that was
+   * DNS-blocked, refused, or answering 404 disappeared from the message as
+   * soon as the fallback failed too: the user was told about the mirror they
+   * never chose (and can do nothing about) and not about the one that broke
+   * first. Which source said what IS the diagnosis here — the two fail for
+   * different reasons, and usually only one of them is worth acting on.
+   */
+  const failures: { source: string; reason: string }[] = []
   // Sources in order, each a fallback for the one before it. The catalog is
   // the FIRST request the market makes, so a mirror that has gone down must
   // mean a slow market rather than an empty one — the list ends at the
@@ -301,10 +312,14 @@ export async function loadRegistry(region: Region = activeRegion()): Promise<Reg
         return data
       } catch (error) {
         last = error
+        failures.push({
+          source: sourceKey(source),
+          reason: error instanceof Error ? error.message : String(error),
+        })
       }
     }
   }
-  throw new Error(describeFetchFailure(last, Date.now() - started, attempts))
+  throw new Error(describeFetchFailure(last, Date.now() - started, attempts, failures))
 }
 
 /**
@@ -318,12 +333,25 @@ export async function loadRegistry(region: Region = activeRegion()): Promise<Reg
  * entirely (measured on Node 25), so a machine whose only route out is a
  * proxy fails here every time while every other tool on it works.
  */
-export function describeFetchFailure(error: unknown, elapsedMs: number, attempts = 2): string {
+export function describeFetchFailure(
+  error: unknown,
+  elapsedMs: number,
+  attempts = 2,
+  failures: readonly { source: string; reason: string }[] = [],
+): string {
   const reason = error instanceof Error ? error.message : String(error)
   const proxy = configuredProxy()
   const parts = [`${reason} (${String(Math.round(elapsedMs / 1000))}s, ${String(attempts)} attempts)`]
   if (proxy !== null) {
     parts.push(`tried through the configured proxy ${proxy.replace(/\/\/[^@]*@/u, '//***@')}`)
+  }
+  // The sources that failed BEFORE the last one, so the primary's own reason
+  // survives into the message instead of being replaced by the fallback's
+  // (#750). One entry per source, reasons clipped: this lands in a banner, and
+  // the first reason is usually the only actionable one.
+  const earlier = failures.slice(0, -1)
+  if (earlier.length > 0) {
+    parts.push(`earlier: ${earlier.map(entry => `${entry.source} — ${entry.reason.slice(0, 160)}`).join(' · ')}`)
   }
   return parts.join(' · ')
 }
