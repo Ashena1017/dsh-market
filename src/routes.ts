@@ -661,7 +661,11 @@ export function mountMarketRoutes(
         // #758: the group toggle reaches this branch without the route-level
         // 409, so the gate must hold here too — mounting a plugin the host's
         // own boot gate would skip activates code the host refuses to load.
-        const gate = hostPeerGate(dir, name, defaultHostRuntimeFacts(dir))
+        // Client-only plugins never load in the host process, so the peer
+        // cap cannot bite — gate only what has a host half (#758 review).
+        const gate = hasHostHalf(config.profile, name, dir)
+          ? hostPeerGate(dir, name, defaultHostRuntimeFacts(dir))
+          : null
         if (gate !== null) {
           const remedy = peerGateRemedy(gate)
           ok = false
@@ -2648,8 +2652,12 @@ export function mountMarketRoutes(
           // would replay the bug — the toggle flips, the hot mount fails, and
           // the card reads "enabled, restart to apply" forever because no
           // restart can ever load it. Refuse up front and say what to do.
+          // Client-only plugins never touch the host process, so the cap
+          // cannot bite them (#758 review).
           if (enabled) {
-            const gate = hostPeerGate(activeProfileDir, name, defaultHostRuntimeFacts(activeProfileDir))
+            const gate = hasHostHalf(config.profile, name, activeProfileDir)
+              ? hostPeerGate(activeProfileDir, name, defaultHostRuntimeFacts(activeProfileDir))
+              : null
             if (gate !== null) {
               const remedy = peerGateRemedy(gate)
               sendJson(response, 409, {
@@ -5607,8 +5615,13 @@ sendJson(response, 200, { updates })
                       // boot gate, which would skip a peer-incompatible
                       // plugin on every boot. Check the same gate first and
                       // leave it unmounted when it would bite; the activation
-                      // report below then reads incompatible.
-                      const gate = hostPeerGate(activeProfileDir, name, defaultHostRuntimeFacts(activeProfileDir))
+                      // report below then reads incompatible. Client-only
+                      // plugins never load in the host process, so the cap
+                      // cannot bite — skip the gate for them (#758 review),
+                      // matching what verifyActivation does outside bundles.
+                      const gate = hasHostHalf(config.profile, name, activeProfileDir)
+                        ? hostPeerGate(activeProfileDir, name, defaultHostRuntimeFacts(activeProfileDir))
+                        : null
                       if (gate !== null) {
                         logEvent('warn', 'install', `${name}: ${gate.peer} ${gate.range} excludes runtime ${gate.runtimeVersion}; leaving it unmounted for the next boot to skip (#757)`)
                         live = false

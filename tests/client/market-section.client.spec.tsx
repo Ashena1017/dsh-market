@@ -3120,6 +3120,48 @@ describe('status-poll / install-response race (#73)', () => {
   })
 })
 
+describe('incompatible install (#758)', () => {
+  it('does not ask for a restart when the installed plugin cannot run on this dsh', async () => {
+    stubFetch({
+      '/dsh-market/installed': { profile: 'web', installed: {}, live: [] },
+      // Keep the host-side pending-restart fallback out of the assertion.
+      '/dsh-market/status': { active: false, pnpm: true, boot: 'boot-1', restart: false, installed: {} },
+      '/dsh-market/updates': { updates: {} },
+      '/dsh-market/install': {
+        ok: true,
+        hot: false,
+        installed: { 'dsh-loop': '^1.0.0' },
+        activation: {
+          'dsh-loop': { state: 'incompatible', hot: false, bundle: true, reasons: ['needs a newer dsh; upgrading dsh will not help'] },
+        },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    await vi.waitFor(() => { screen.getByText('dsh-loop') })
+    // Same installed-cache caveat as the #73 spec above.
+    await vi.waitFor(() => { screen.getByRole('button', { name: en.tabInstalled }) })
+    let card: HTMLElement | null = screen.getByText('dsh-loop')
+    while (card !== null && within(card).queryAllByRole('button', { name: en.install }).length === 0) {
+      card = card.parentElement
+    }
+    expect(card).not.toBeNull()
+    fireEvent.click(within(card!).getByRole('button', { name: en.install }))
+    await vi.waitFor(() => { screen.getByRole('button', { name: en.confirmInstall }) })
+    fireEvent.click(screen.getByRole('button', { name: en.confirmInstall }))
+    // Wait until the install response has been fully applied: the card tells
+    // the user why the plugin cannot run. Only then is the banner count
+    // meaningful — checking too early passes on the unfixed code too.
+    await vi.waitFor(() => {
+      expect(screen.getAllByText(re(en.stateIncompatible)).length).toBeGreaterThan(0)
+    })
+    expect(fetchCalls.some(call => call.path === '/dsh-market/install')).toBe(true)
+    // The install succeeded, but no restart can make this plugin run —
+    // the banner would promise a fix that never comes.
+    expect(screen.queryAllByText(re(en.restartBanner)).length).toBe(0)
+    expect(sessionStorage.getItem('dshm-restart') ?? '').not.toContain('dsh-loop')
+  })
+})
+
 describe('uninstall confirmation Modal', () => {
   const installedFixture = {
     '/dsh-market/installed': { profile: 'web', installed: { 'dsh-loop': '^1.0.0' }, live: [] },

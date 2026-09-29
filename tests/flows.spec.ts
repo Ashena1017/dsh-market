@@ -1778,6 +1778,48 @@ describe('install flow', () => {
     expect(hot.mounts).not.toContain('dsh-loop')
   })
 
+  it('hot-mounts a client-only plugin whose dsh peer cap the runtime already outruns (#758)', async () => {
+    // A client-only plugin never loads in the host process, so its dsh peer
+    // cap cannot bite. The gate used to refuse it anyway, while the boot
+    // gate it mirrors (#757) only reads bundles — and a client-only plugin
+    // is not in them.
+    fake.npm['dsh-loop'] = {
+      latest: '1.2.0',
+      versions: {
+        '1.2.0': {
+          manifest: { dsh: { client: { platform: 'web' } }, main: 'lib/index.js', peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' } },
+          artifacts: ['lib/index.js'],
+        },
+      },
+    }
+    gateFacts.runtimeVersion = '0.2.0'
+
+    const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+
+    expect(r.status).toBe(200)
+    expect(hot.mounts).toContain('dsh-loop')
+    expect(r.json.activation['dsh-loop']?.state).not.toBe('incompatible')
+  })
+
+  it('enables a client-only plugin whose dsh peer cap the runtime already outruns (#758)', async () => {
+    fake.npm['dsh-loop'] = {
+      latest: '1.2.0',
+      versions: {
+        '1.2.0': {
+          manifest: { dsh: { client: { platform: 'web' } }, main: 'lib/index.js', peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' } },
+          artifacts: ['lib/index.js'],
+        },
+      },
+    }
+    gateFacts.runtimeVersion = '0.2.0'
+    await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+
+    const on = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-loop', enabled: true })
+
+    expect(on.status).toBe(200)
+    expect(on.json.incompatible).not.toBe(true)
+  })
+
   it('rolls back manifest residue when the add fails after pnpm wrote package.json (#65)', async () => {
     fake.npm['dsh-loop'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
     // pnpm writes the manifest, then fails resolving another (ghost/private)

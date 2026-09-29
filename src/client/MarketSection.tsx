@@ -2597,7 +2597,11 @@ export function MarketSection(props: MarketSectionProps) {
             setDoneUrls(urls => urls.filter(url => url !== plugin.url))
             setHotUrls(urls => urls.includes(plugin.url) ? urls : urls.concat(plugin.url))
             setHotNames(names => names.includes(plugin.name) ? names : names.concat(plugin.name))
-          } else {
+          } else if (body.activation?.[plugin.name]?.state !== 'incompatible') {
+            // An incompatible plugin stays incompatible across restarts, so
+            // "restart to apply" would promise a fix no restart can deliver;
+            // the activation warning on the installed card already says what
+            // to do instead.
             setDoneUrls(urls => urls.includes(plugin.url) ? urls : urls.concat(plugin.url))
           }
           if (body.compatibility?.code === 'soft-incompatible') {
