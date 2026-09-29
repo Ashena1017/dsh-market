@@ -139,11 +139,16 @@
 .confirmBody{display:flex;flex-direction:column;gap:12px}
 /* A step wider than the default Modal so the signature — owner, version,
    downloads, stars, date — stays one line. Notes stay wider than this (#739). */
-.confirmModal{width:min(560px,92vw);max-width:min(560px,92vw)}
-/* The host body always starts 20px under the title, which is the slot a
-   description would occupy. This dialog has no description, so that band
-   is just empty air (#739). */
-.confirmContent > :last-child{margin-top:0}
+.confirmModal{width:min(560px,92vw);max-width:min(560px,92vw);max-height:100%}
+/* The host frame already insets the card. Cap against that box, then scroll
+   the body so the title and the install buttons stay put. */
+.confirmContent{flex:1 1 auto;min-height:0;overflow:hidden}
+.confirmContent > :first-child{flex-shrink:0}
+/* The host body always starts 20px under the title. This dialog has no
+   description, so that band is empty; the same element is what scrolls once
+   the card hits the frame. */
+.confirmContent > :last-child{margin-top:0;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.confirmModal > :last-child{flex-shrink:0}
 .confirmBody .byline{margin-top:0;flex-wrap:nowrap}
 .confirmBody .owner{min-width:0}
 .confirmBody .shots{margin:0;padding:0}
@@ -182,7 +187,7 @@
 .installCautionHead{display:flex;align-items:center;gap:6px;margin:0;font-size:13px;line-height:20px;font-weight:600;color:var(--dsw-alias-label-primary,#1f2328)}
 .installCautionMark{display:block;flex:none}
 .installCautionBody{margin:6px 0 0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary,#1f2328)}
-.installCautionFoot{display:flex;align-items:baseline;gap:12px;margin:6px 0 0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary,#1f2328)}
+.installCautionFoot{display:flex;align-items:baseline;gap:12px;margin:0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary,#1f2328)}
 .installCautionLink{margin-left:auto;flex:none;white-space:nowrap;font-weight:600;font-size:13px;line-height:20px;color:var(--dsw-alias-link,#3b82f6);text-decoration:none}
 .installCautionLink:hover{text-decoration:underline}
 .confirmFineprint{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#6b7280)}

@@ -788,6 +788,30 @@ describe('MarketSection (jsdom)', () => {
     expect(foot?.textContent).toContain(en.terminalCautionStartup)
   })
 
+  it('still shows the startup line when only the description mentions a CLI (#739)', async () => {
+    stubFetch({
+      '/dsh-market/registry': {
+        source: 'live',
+        hostVersion: '0.1.2-alpha.2',
+        registry: {
+          ...REGISTRY,
+          count: 1,
+          plugins: [{
+            name: 'note-tool', owner: 'alice', url: 'https://github.com/alice/note-tool',
+            category: 'tools', npm: null, stars: 1, added: '2026-08-01',
+            description: { en: 'Supports a CLI flag', zh: '支持命令行参数' }, install: 'dsh plugin install note-tool',
+          }],
+        },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('note-tool')
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    expect(await screen.findByText(en.terminalCautionTitle)).toBeTruthy()
+    expect(screen.getByRole('link', { name: en.terminalCautionLink })).toBeTruthy()
+    expect(screen.getByText(en.terminalCautionStartup)).toBeTruthy()
+  })
+
   it('opens the next install dialog with both folds collapsed (#739)', async () => {
     stubTerminalPlugin()
     render(<MarketSection {...props()} />)
@@ -816,6 +840,44 @@ describe('MarketSection (jsdom)', () => {
     fireEvent.click(screen.getByRole('button', { name: en.cmdCopy }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('dsh plugin install dsh-tui'))
     expect(await screen.findByRole('status')).toHaveProperty('textContent', en.cmdCopied)
+  })
+
+  it('falls back to execCommand inside the click when writeText rejects (#739)', async () => {
+    let copiedDuringClick = false
+    const writeText = vi.fn().mockImplementation(() => {
+      expect(copiedDuringClick).toBe(true)
+      return Promise.reject(new Error('denied'))
+    })
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const exec = vi.fn(() => {
+      copiedDuringClick = true
+      return true
+    })
+    Object.defineProperty(document, 'execCommand', { configurable: true, writable: true, value: exec })
+    stubTerminalPlugin()
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-tui')
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    fireEvent.click(await screen.findByText(en.cmdDetails))
+    fireEvent.click(screen.getByRole('button', { name: en.cmdCopy }))
+    expect(await screen.findByRole('status')).toHaveProperty('textContent', en.cmdCopied)
+    expect(exec).toHaveBeenCalledWith('copy')
+  })
+
+  it('does not show copied when the clipboard and execCommand both fail (#739)', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const exec = vi.fn(() => false)
+    Object.defineProperty(document, 'execCommand', { configurable: true, writable: true, value: exec })
+    stubTerminalPlugin()
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-tui')
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    fireEvent.click(await screen.findByText(en.cmdDetails))
+    fireEvent.click(screen.getByRole('button', { name: en.cmdCopy }))
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(exec).toHaveBeenCalledWith('copy')
   })
 
   it('offers the release a hold kept back, and installs it when asked (#635)', async () => {

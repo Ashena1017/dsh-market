@@ -1173,25 +1173,41 @@ function ConfirmTerminalIcon() {
   )
 }
 
-/** Clipboard first; a hidden textarea covers hosts where writeText rejects. */
+/** execCommand only succeeds inside the click. writeText rejects later, after
+ * Chrome has already dropped the user activation, so the textarea copy has
+ * to happen before that promise. */
+function copyInstallCommandNow(text: string): boolean {
+  const area = document.createElement('textarea')
+  area.value = text
+  area.setAttribute('readonly', '')
+  area.style.position = 'fixed'
+  area.style.top = '0'
+  area.style.left = '-9999px'
+  document.body.appendChild(area)
+  area.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  area.remove()
+  return ok
+}
+
 function writeInstallCommand(text: string): Promise<void> {
-  const viaTextarea = () => {
-    const area = document.createElement('textarea')
-    area.value = text
-    area.setAttribute('readonly', '')
-    area.style.position = 'fixed'
-    area.style.top = '0'
-    area.style.left = '-9999px'
-    document.body.appendChild(area)
-    area.select()
-    const ok = document.execCommand('copy')
-    area.remove()
-    return ok ? Promise.resolve() : Promise.reject(new Error('copy failed'))
+  const copiedNow = copyInstallCommandNow(text)
+  const write = navigator.clipboard?.writeText
+  if (typeof write !== 'function') {
+    return copiedNow ? Promise.resolve() : Promise.reject(new Error('copy failed'))
   }
-  if (typeof navigator.clipboard?.writeText === 'function') {
-    return navigator.clipboard.writeText(text).catch(viaTextarea)
-  }
-  return viaTextarea()
+  return write.call(navigator.clipboard, text).then(
+    () => undefined,
+    () => {
+      if (copiedNow) return
+      throw new Error('copy failed')
+    },
+  )
 }
 
 /** Copy control for the install command. Success shows 「已复制」 beside the
