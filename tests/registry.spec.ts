@@ -526,3 +526,127 @@ describe('marketFetch', () => {
     expect(second?.dispatcher).toBe(first?.dispatcher)
   })
 })
+
+describe('loadRegistry body deadlines (the catalog outgrew a total one)', () => {
+  // The catalog is not the 295 KB file the 15s budget was sized for any
+  // more: it passed 5 MB in September 2026, and on an ordinary slow but
+  // healthy path (measured ~60 KB/s against 1.22 MB gzipped) the first
+  // fetch needs on the order of 90s. A total deadline of 15s, tried twice,
+  // makes that first fetch impossible — the market never opens (#188,
+  // #750 both measured the same wall from their regions). The two guards
+  // below pin the split that fixes it: the server must START answering
+  // fast, and after that only silence — not duration — ends the read.
+  //
+  // Fake timers drive both the chunk schedule and the watchdogs, so no
+  // test here waits real seconds. The real-time counterpart of this
+  // evidence lives in the linked issue: 15s total budget aborts a flowing
+  // body at 15005ms; the same link finishes in 89.9s when allowed to.
+
+  /** A body whose pieces arrive at scripted moments of fake time. */
+  const jsonStream = (schedule: Array<{ at: number, piece: string }>): ReadableStream<Uint8Array> =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const { at, piece } of schedule) {
+          setTimeout(() => {
+            // A reader that gave up cancels the stream; pieces still on the
+            // script have nowhere to go and are dropped, not thrown.
+            try { controller.enqueue(new TextEncoder().encode(piece)) } catch { /* reader is gone */ }
+          }, at)
+        }
+        const last = schedule[schedule.length - 1]?.at ?? 0
+        setTimeout(() => {
+          try { controller.close() } catch { /* cancelled already */ }
+        }, last + 1)
+      },
+    })
+
+  /** A body that says one thing and then never speaks again. */
+  const stalledStream = (): ReadableStream<Uint8Array> =>
+    new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{"plugins":')) },
+    })
+
+  const streamingOk = (body: ReadableStream<Uint8Array>): Response =>
+    new Response(body, { status: 200, headers: { 'content-type': 'application/json' } })
+
+  it('keeps reading a slow body that never stalls, past the old 15s total budget', async () => {
+    vi.useFakeTimers()
+    try {
+      const full = JSON.stringify(CATALOG)
+      const piece = Math.ceil(full.length / 20)
+      const schedule = Array.from({ length: 20 }, (_, i) => ({
+        at: i * 1_000,
+        piece: full.slice(i * piece, (i + 1) * piece),
+      }))
+      scriptedFetch(streamingOk(jsonStream(schedule)))
+      const pending = loadRegistry()
+      // Chunks land at t=0..19s and the body closes at t=20s: still
+      // arriving at t=15s, where the old total budget used to cut it off.
+      await vi.advanceTimersByTimeAsync(25_000)
+      const registry = await pending
+      expect(registry.plugins).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 10_000)
+
+  it('ends a body that goes silent and says so, on every attempt', async () => {
+    vi.useFakeTimers()
+    try {
+      scriptedFetch(streamingOk(stalledStream()), streamingOk(stalledStream()))
+      // Handler first: the rejection lands while the clock is being advanced,
+      // and a promise that rejects before anyone is listening takes the whole
+      // run down as an unhandled rejection even though the test then passes.
+      const rejection = expect(loadRegistry()).rejects.toThrow(/no new data for 15s while downloading the catalog/)
+      // One chunk at t=0, then nothing. Silence — not slowness — is what
+      // the body deadline is for, and both attempts must end in it.
+      await vi.advanceTimersByTimeAsync(33_000)
+      await rejection
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 8_000)
+
+  it('refuses a body larger than any catalog instead of buffering it all', async () => {
+    // 256 MB is the cap the source ships with (MAX_CATALOG_BODY_BYTES).
+    // Both places say the number out loud, so resizing one shows the other
+    // in review. Before the cap, a firehose mirror was buffered whole,
+    // decoded, and died in JSON.parse behind a message about parsing.
+    const flood = new Uint8Array(256 * 1024 * 1024 + 1024)
+    const firehose = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(flood); controller.close() },
+    })
+    scriptedFetch(streamingOk(firehose))
+    await expect(loadRegistry()).rejects.toThrow(/the catalog response grew past 256 MB/)
+  }, 20_000)
+
+  it('ends a body that trickles forever at a 10-minute ceiling, not the stall watchdog', async () => {
+    vi.useFakeTimers()
+    try {
+      // One byte inside every 15s stall window keeps the watchdog quiet
+      // forever; without a total ceiling neither this read nor this test
+      // would end. Each attempt gets its own trickle, built the moment
+      // that attempt starts, so every one is cut by the ceiling at its
+      // own 10-minute mark — a scripted replay of one shared body would
+      // instead hand the later attempts a fully buffered, parseable copy.
+      // The last two bytes land after the ceiling fires; the point is
+      // that progress alone cannot save it.
+      const schedule = Array.from({ length: 45 }, (_, i) => ({ at: i * 14_000, piece: 'a' }))
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(streamingOk(jsonStream(schedule)))))
+      const rejection = expect(loadRegistry()).rejects.toThrow(/did not finish within 600s \(received 43 bytes\)/)
+      // Advancing far past the last ceiling is free on fake time and
+      // covers however many attempts the retry loop makes.
+      await vi.advanceTimersByTimeAsync(5_000_000)
+      await rejection
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 8_000)
+
+  it('says the response carried no body instead of failing to parse one', async () => {
+    scriptedFetch(new Response(null, { status: 200, headers: { 'content-type': 'application/json' } }))
+    // Before the guard an empty body surfaced as "Unexpected end of JSON
+    // input" — a parse error that told the user nothing about the network.
+    await expect(loadRegistry()).rejects.toThrow(/the catalog response carried no body/)
+  })
+})
