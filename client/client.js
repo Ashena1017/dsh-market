@@ -8144,11 +8144,24 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			const brokenPluginNames = (0, react.useMemo)(() => Object.keys(brokenPlugins), [brokenPlugins]);
 			const [dismissBrokenError, setDismissBrokenError] = (0, react.useState)(null);
 			/**
-			* Each reply carries the whole remaining map, so a late answer to an earlier
-			* click would restore a notice the user has already put away (#763). Only the
-			* newest dismiss is allowed to write.
+			* Per plugin, not one counter for the panel (#763 review).
+			*
+			* A shared generation made a second plugin's success swallow the first one's
+			* FAILURE, so a notice the server still had stayed hidden on screen with no
+			* error — the panel claimed a state the server did not have. Each name
+			* carries its own counter, so only a LATER click on the SAME plugin can
+			* supersede this one, and a different plugin's reply never can.
 			*/
-			const dismissBrokenGen = (0, react.useRef)(0);
+			const dismissBrokenGen = (0, react.useRef)(/* @__PURE__ */ new Map());
+			/**
+			* Bumped by every authoritative `/installed` read. A dismiss whose reply
+			* arrives after one was overtaken by that read: the panel is already showing
+			* the server's truth, and rolling this failure back would put back a record
+			* the read has since settled.
+			*/
+			const installedReadGen = (0, react.useRef)(0);
+			/** Rows with a dismiss in flight, so one row cannot queue two. */
+			const [dismissingBroken, setDismissingBroken] = (0, react.useState)(() => /* @__PURE__ */ new Set());
 			const [envFixing, setEnvFixing] = (0, react.useState)(false);
 			const [envFailed, setEnvFailed] = (0, react.useState)(false);
 			const [bootId, setBootId] = (0, react.useState)(null);
@@ -8287,6 +8300,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					if (body.activation && typeof body.activation === "object") setActivations(body.activation);
 					const findings = body.diagnostics?.schema === "dsh-market/diagnostics/v1" && Array.isArray(body.diagnostics.findings) ? body.diagnostics.findings.filter(isHostDependencyFinding) : [];
 					setBrokenPlugins(isRecordOfRecords(body.brokenPlugins) ? body.brokenPlugins : {});
+					installedReadGen.current += 1;
 					setHostDependencyFindings(findings);
 				}).catch(() => {});
 				fetch(api("/dsh-market/updates") + (force === true ? "?force=1" : ""), { cache: "no-store" }).then((res) => res.json()).then((body) => setUpdates(body.updates || {})).catch(() => {});
@@ -9614,23 +9628,48 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			* a plugin vanished — but the reporter's plugin was no longer in the catalog,
 			* so the search it offered found nothing and the banner outlived every other
 			* action. Hiding it says nothing about the plugin: the declaration stays
-			* dropped and the directory stays where it is, which is why the reply's
-			* remaining map is applied and nothing else is touched.
+			* dropped and the directory stays where it is.
 			*
-			* On failure the notice comes BACK. A dismiss that silently did nothing is
-			* worse than having no button: the user would go on believing they had been
-			* told the truth about their own profile.
+			* Every step touches THIS name and nothing else, in both directions:
+			*
+			* - success removes this key and ignores the reply's map. That map is a
+			*   snapshot from when the request ran, so adopting it wholesale would
+			*   resurrect a notice another click had already dismissed, and would drop a
+			*   record an `/installed` read reported while this was in flight — including
+			*   one written by a failed update (#663), which is the one thing the notice
+			*   exists for.
+			* - failure puts THIS key back, and only if no `/installed` read has landed
+			*   since: that read is the server's current truth and outranks a rollback
+			*   built from what the panel happened to be showing.
+			*
+			* A dismiss that silently did nothing is worse than having no button: the
+			* user would go on believing they had been told the truth about their profile.
 			*/
 			const dismissBrokenPlugin = (0, react.useCallback)((name) => {
-				const gen = ++dismissBrokenGen.current;
-				const previous = brokenPlugins;
+				const record = brokenPlugins[name];
+				if (record === void 0) return;
+				const gens = dismissBrokenGen.current;
+				const gen = (gens.get(name) ?? 0) + 1;
+				gens.set(name, gen);
+				const readAtRequest = installedReadGen.current;
 				setDismissBrokenError(null);
+				setDismissingBroken((current) => new Set(current).add(name));
 				setBrokenPlugins((current) => {
 					if (current[name] === void 0) return current;
 					const next = { ...current };
 					delete next[name];
 					return next;
 				});
+				/** This request's own failure, applied to this one name only. */
+				const restore = (reason) => {
+					if (dismissBrokenGen.current.get(name) !== gen) return;
+					if (installedReadGen.current !== readAtRequest) return;
+					setBrokenPlugins((current) => current[name] === void 0 ? {
+						...current,
+						[name]: record
+					} : current);
+					setDismissBrokenError(reason);
+				};
 				fetch(api("/dsh-market/dismiss-broken"), {
 					method: "POST",
 					headers: { "content-type": "application/json" },
@@ -9646,17 +9685,16 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 						body
 					};
 				}).then(({ status, body }) => {
-					if (gen !== dismissBrokenGen.current) return;
-					if (status === 200 && body?.ok === true && isRecordOfRecords(body.brokenPlugins)) {
-						setBrokenPlugins(body.brokenPlugins);
-						return;
-					}
-					setBrokenPlugins(previous);
-					setDismissBrokenError(typeof body?.error === "string" ? body.error : t("toggleFail"));
+					if (status === 200 && body?.ok === true) return;
+					restore(typeof body?.error === "string" ? body.error : t("toggleFail"));
 				}).catch((error) => {
-					if (gen !== dismissBrokenGen.current) return;
-					setBrokenPlugins(previous);
-					setDismissBrokenError(String(error));
+					restore(String(error));
+				}).finally(() => {
+					setDismissingBroken((current) => {
+						const next = new Set(current);
+						next.delete(name);
+						return next;
+					});
 				});
 			}, [brokenPlugins, t]);
 			const clearStaleFavorites = (0, react.useCallback)(() => {
@@ -11574,6 +11612,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 										/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 											variant: "ghost",
 											size: "sm",
+											disabled: dismissingBroken.has(name),
 											onClick: () => dismissBrokenPlugin(name),
 											children: t("brokenPluginDismiss")
 										})

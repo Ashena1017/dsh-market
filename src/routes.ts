@@ -3066,10 +3066,16 @@ export function mountMarketRoutes(
             // Re-read immediately before writing, so a concurrent install's
             // `clearBrokenPlugin` cannot be undone by a stale snapshot (#414/#657).
             const fresh = readMarketState(activeProfileDir)
-            const next = { ...(fresh.brokenPlugins ?? {}) }
-            // Deleting an absent key is a no-op on purpose: the client and the
-            // user can both be out of date, and refusing would strand the
-            // button on a notice that is already gone.
+            const current = fresh.brokenPlugins ?? {}
+            // Nothing to remove: answer with what is there and stop. A second
+            // click on the same row, or a client whose view was already out of
+            // date, must not rewrite state.json or append a log line claiming
+            // the user hid a notice that was not there (#763 review).
+            if (current[name] === undefined) {
+              sendJson(response, 200, { ok: true, brokenPlugins: current })
+              return
+            }
+            const next = { ...current }
             delete next[name]
             const brokenPlugins = Object.keys(next).length > 0 ? next : undefined
             // Explicitly present even when undefined: `writeMarketState` reads

@@ -605,6 +605,43 @@ describe('POST /dsh-market/dismiss-broken (#763)', () => {
     expect(Object.keys(await listed())).toEqual(['dsh-beta'])
   })
 
+  it('a dismiss that removes nothing does not touch the file or the log (#763 review)', async () => {
+    // The log is the durable record of what the market did (#663), and the
+    // reporter had to export one to get an answer. A line saying "the user hid
+    // the notice for X" for a name that had no notice is a false statement in
+    // the one file that is supposed to be true — and it is written on every
+    // double-click and every out-of-date client.
+    // Names unique to this spec: the in-memory log is shared across a test
+    // file, so a bare count of the event would also count the other specs here.
+    const mine = 'dsh-noop-probe'
+    seedBroken(mine, 'dsh-beta')
+    const dismiss = (name: string) =>
+      hit(routes, '/dsh-market/dismiss-broken', post('/dsh-market/dismiss-broken', { name }))
+    // The export renders every entry twice (a JSON line and a readable one), so
+    // count the machine form only — one event is one of those.
+    const linesFor = (body: string) =>
+      body.split('\n').filter(line => line.includes('"event":"broken-notice-dismissed"') && line.includes(mine))
+
+    // One real dismissal, to establish the line that must NOT grow after this.
+    await dismiss(mine)
+    const logsAfterReal = (await hit(routes, '/dsh-market/logs', { method: 'GET', url: '/dsh-market/logs' })).body
+    expect(linesFor(logsAfterReal)).toHaveLength(1)
+    expect(logsAfterReal).toContain('broken-notice-dismissed')
+    const stateAfterReal = readFileSync(join(dir, '.dsh-market', 'state.json'), 'utf8')
+
+    // The same name again, and a name that never had a notice.
+    await dismiss(mine)
+    await dismiss('dsh-never-existed')
+
+    const logsAfterNoop = (await hit(routes, '/dsh-market/logs', { method: 'GET', url: '/dsh-market/logs' })).body
+    expect(linesFor(logsAfterNoop)).toHaveLength(1)
+    // ...and the state file is byte-identical: a no-op that rewrote it would be
+    // indistinguishable from a real change to anyone reading the file later.
+    expect(readFileSync(join(dir, '.dsh-market', 'state.json'), 'utf8')).toBe(stateAfterReal)
+    // Still the authoritative list, and the other notice untouched.
+    expect(Object.keys(await listed())).toEqual(['dsh-beta'])
+  })
+
   it('refuses a cross-origin dismiss and validates the name', async () => {
     seedBroken('dsh-alpha', 'dsh-beta')
 
