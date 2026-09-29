@@ -3650,12 +3650,19 @@ export function MarketSection(props: MarketSectionProps) {
     })
     /** This request's own failure, applied to this one name only. */
     const restore = (reason: string) => {
-      // Superseded by a later click on the same row, or overtaken by a read.
+      // A later click on the same row owns this name now; that one reports its
+      // own outcome, and reporting this one too would be two answers to one
+      // question.
       if (dismissBrokenGen.current.get(name) !== gen) return
-      if (installedReadGen.current !== readAtRequest) return
-      setBrokenPlugins(current => (
-        current[name] === undefined ? { ...current, [name]: record } : current
-      ))
+      // An `/installed` read landed meanwhile, so the panel is showing the
+      // server's current truth and this rollback — built from what the panel
+      // happened to be holding — would only argue with it. Skipping the record
+      // does NOT skip the message: the dismiss failed, the user is owed that.
+      if (installedReadGen.current === readAtRequest) {
+        setBrokenPlugins(current => (
+          current[name] === undefined ? { ...current, [name]: record } : current
+        ))
+      }
       setDismissBrokenError(reason)
     }
     fetch(api('/dsh-market/dismiss-broken'), {
@@ -3673,8 +3680,21 @@ export function MarketSection(props: MarketSectionProps) {
       })
       .then(({ status, body }) => {
         if (status === 200 && body?.ok === true) {
-          // The optimistic removal already stands. Nothing to adopt: the
-          // reply's map is older than anything the panel learned since.
+          // Said again, idempotently, and only for this name. The optimistic
+          // removal can have been undone by an `/installed` read that was
+          // already in flight when the click happened: it is a snapshot from
+          // before, so it still carries the notice, and it lands after. The
+          // server has now confirmed the record is gone, so the panel says so
+          // too — otherwise it would show a notice the server no longer has,
+          // with no error to explain it. Never the reply's whole map: that is
+          // older than anything the panel has learned since.
+          if (dismissBrokenGen.current.get(name) !== gen) return
+          setBrokenPlugins((current) => {
+            if (current[name] === undefined) return current
+            const next = { ...current }
+            delete next[name]
+            return next
+          })
           return
         }
         restore(typeof body?.error === 'string' ? body.error : t('toggleFail'))

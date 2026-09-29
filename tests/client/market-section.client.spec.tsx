@@ -3777,7 +3777,6 @@ describe('a removed-declaration notice the user can put away (#763)', () => {
     // hidden in the panel while the server still has it. The user is then told
     // nothing is wrong and has to reload to find out.
     const pet = twoBroken.brokenPlugins['dsh-pet']
-    const ours = twoBroken.brokenPlugins['dsh-ours']
     const base = stubFetch({ '/dsh-market/installed': twoBroken })
     let releaseA = (): void => {}
     const aPending = new Promise<void>((resolve) => { releaseA = resolve })
@@ -3812,7 +3811,6 @@ describe('a removed-declaration notice the user can put away (#763)', () => {
     // ...and B stayed dismissed. B's success is not undone by A's late failure,
     // and A's failure did not bring B back either.
     expect(screen.queryByText(en.brokenPluginTitle.replace('{0}', 'dsh-ours'))).toBeNull()
-    expect(ours).toBeDefined()
   })
 
   it('does not let a stale dismiss reply erase a notice the panel already knows about', async () => {
@@ -3852,6 +3850,73 @@ describe('a removed-declaration notice the user can put away (#763)', () => {
     // ...and the reply did not take the other two with it.
     expect(screen.getByText(en.brokenPluginTitle.replace('{0}', 'dsh-newcomer'))).toBeTruthy()
     expect(screen.getByText(en.brokenPluginTitle.replace('{0}', 'dsh-ours'))).toBeTruthy()
+  })
+
+  it('re-applies the dismissal when a stale /installed read puts the notice back', async () => {
+    // An operation re-reads `/installed` when it finishes (that read is what
+    // keeps the rest of the list trustworthy). A read already in flight when
+    // the user clicks dismiss is a snapshot from before the click, so it can
+    // still carry the notice — and it lands AFTER the optimistic removal.
+    //
+    // Success cannot simply "keep what we did": by the time the server says
+    // yes, the panel may have been re-populated by that older read. The server
+    // is now clear while the notice is on screen again and the user is told
+    // nothing. So success deletes its own key once more — that one name only,
+    // never the reply's whole map.
+    const listing = {
+      profile: 'web', installed: { 'dsh-ours': '^1.0.0' }, live: ['dsh-ours'], disabled: [], groups: {}, groupOrder: [], favorites: [], blocked: [],
+      brokenPlugins: { 'dsh-pet': { spec: '^1.4.0', reason: 'incomplete-build-locked', at: '2026-09-24T00:00:00.000Z' } },
+    }
+    const base = stubFetch({
+      '/dsh-market/installed': listing,
+      '/dsh-market/updates': { updates: { 'dsh-ours': { kind: 'npm', version: '1.0.0', current: '1.0.0', latest: '1.2.0', updateAvailable: true } } },
+      '/dsh-market/update': { ok: true },
+    })
+    let releaseDismiss = (): void => {}
+    const dismissPending = new Promise<void>((resolve) => { releaseDismiss = resolve })
+    let releaseStaleRead = (): void => {}
+    const staleReadPending = new Promise<void>((resolve) => { releaseStaleRead = resolve })
+    let installedCalls = 0
+    vi.stubGlobal('fetch', (input: unknown, init?: RequestInit) => {
+      const path = String(input).split('?')[0]
+      if (path === '/dsh-market/dismiss-broken') {
+        return dismissPending.then(() => new Response(JSON.stringify({ ok: true, brokenPlugins: {} }), { status: 200 }))
+      }
+      if (path === '/dsh-market/installed') {
+        installedCalls += 1
+        if (installedCalls === 1) return base(input, init)
+        // The read the update kicked off: it started before the dismissal, so
+        // it still reports the notice.
+        return staleReadPending.then(() => new Response(JSON.stringify(listing), { status: 200 }))
+      }
+      return base(input, init)
+    })
+
+    render(<MarketSection {...props()} preferredSubsectionId="installed" />)
+    await screen.findByText(en.brokenPluginTitle.replace('{0}', 'dsh-pet'))
+    const update = await screen.findByRole('button', { name: en.update })
+
+    // The update's own re-read is now in flight, and held.
+    fireEvent.click(update)
+    await waitFor(() => { expect(installedCalls).toBeGreaterThan(1) })
+
+    // The user dismisses the notice while that older read is still out.
+    fireEvent.click(within(brokenRow('dsh-pet')).getByRole('button', { name: en.brokenPluginDismiss }))
+    await waitFor(() => {
+      expect(screen.queryByText(en.brokenPluginTitle.replace('{0}', 'dsh-pet'))).toBeNull()
+    })
+
+    // ...and the older read lands, putting the notice back.
+    await act(async () => { releaseStaleRead(); await staleReadPending; await new Promise((r) => { setTimeout(r, 0) }) })
+    expect(screen.getByText(en.brokenPluginTitle.replace('{0}', 'dsh-pet'))).toBeTruthy()
+
+    // Now the server answers, and it agrees the notice is gone.
+    await act(async () => { releaseDismiss(); await dismissPending; await new Promise((r) => { setTimeout(r, 0) }) })
+
+    // The panel must agree with the server, not with its own older read.
+    await waitFor(() => {
+      expect(screen.queryByText(en.brokenPluginTitle.replace('{0}', 'dsh-pet'))).toBeNull()
+    })
   })
 
   it('ignores a stale dismiss reply for a plugin that is already gone (#763)', async () => {
@@ -3913,8 +3978,16 @@ describe('a removed-declaration notice the user can put away (#763)', () => {
     // The ordinary row's real affordances, present and accounted for.
     expect(await screen.findByRole('button', { name: en.update })).toBeTruthy()
     expect(screen.getByRole('button', { name: re(en.notesLink) })).toBeTruthy()
-    // No removed-declaration notice, so no way to dismiss one.
-    expect(screen.queryByText(re(en.brokenPluginTitle))).toBeNull()
+    // The panel named the real version, so this really is an update row and
+    // not an empty list that happens to lack a dismiss button.
+    expect(screen.getByText(en.hostUpdateReady.replace('{0}', 'v1.2.0'))).toBeTruthy()
+    // Same plugin, and it is on screen — as an installed row with an update
+    // pending. What it must NOT carry is the removed-declaration notice: the
+    // title is a different string from the row name, so this can tell the two
+    // apart rather than just finding the name somewhere.
+    expect(screen.getByText('dsh-pet')).toBeTruthy()
+    expect(screen.queryByText(en.brokenPluginTitle.replace('{0}', 'dsh-pet'))).toBeNull()
+    // ...and so no way to dismiss one.
     expect(screen.queryByRole('button', { name: en.brokenPluginDismiss })).toBeNull()
   })
 })

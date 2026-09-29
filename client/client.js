@@ -9663,8 +9663,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				/** This request's own failure, applied to this one name only. */
 				const restore = (reason) => {
 					if (dismissBrokenGen.current.get(name) !== gen) return;
-					if (installedReadGen.current !== readAtRequest) return;
-					setBrokenPlugins((current) => current[name] === void 0 ? {
+					if (installedReadGen.current === readAtRequest) setBrokenPlugins((current) => current[name] === void 0 ? {
 						...current,
 						[name]: record
 					} : current);
@@ -9685,7 +9684,16 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 						body
 					};
 				}).then(({ status, body }) => {
-					if (status === 200 && body?.ok === true) return;
+					if (status === 200 && body?.ok === true) {
+						if (dismissBrokenGen.current.get(name) !== gen) return;
+						setBrokenPlugins((current) => {
+							if (current[name] === void 0) return current;
+							const next = { ...current };
+							delete next[name];
+							return next;
+						});
+						return;
+					}
 					restore(typeof body?.error === "string" ? body.error : t("toggleFail"));
 				}).catch((error) => {
 					restore(String(error));
