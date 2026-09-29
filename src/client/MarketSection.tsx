@@ -1708,6 +1708,9 @@ export function MarketSection(props: MarketSectionProps) {
   /** Ignores out-of-order /dsh-market/favorite responses after a newer toggle. */
   const favoriteOpGen = useRef(0)
   const [blockError, setBlockError] = useState<string | null>(null)
+  const [updateExemptError, setUpdateExemptError] = useState<string | null>(null)
+  const [updateExemptNotice, setUpdateExemptNotice] = useState<string | null>(null)
+  const updateExemptOpGen = useRef(0)
   /** Shown once a hide sticks, so the card vanishing has a place to look. */
   const [blockNotice, setBlockNotice] = useState<string | null>(null)
   /** Ignores out-of-order /dsh-market/block responses after a newer toggle. */
@@ -1763,6 +1766,8 @@ export function MarketSection(props: MarketSectionProps) {
   const favoriteErrorDone = useCallback(() => setFavoriteError(null), [])
   const blockErrorDone = useCallback(() => setBlockError(null), [])
   const blockNoticeDone = useCallback(() => setBlockNotice(null), [])
+  const updateExemptErrorDone = useCallback(() => setUpdateExemptError(null), [])
+  const updateExemptNoticeDone = useCallback(() => setUpdateExemptNotice(null), [])
   const [updates, setUpdates] = useState<Record<string, UpdateStatus>>({})
   /** Update reminders dismissed for this host boot. The Installed tab still
    * shows these plugins and their update actions; only proactive prompts use
@@ -1864,6 +1869,7 @@ export function MarketSection(props: MarketSectionProps) {
   const [favoriteUrls, setFavoriteUrls] = useState<string[]>([])
   /** Package names the user hid from Discover (#657). */
   const [blockedNames, setBlockedNames] = useState<string[]>([])
+  const [updateExemptNames, setUpdateExemptNames] = useState<string[]>([])
   /** Rows the user asked to show the AUTHOR's description on, despite a note. */
   const [showTheirs, setShowTheirs] = useState<string[]>([])
   /** The row whose note is being edited, and the text in the box. */
@@ -2100,6 +2106,7 @@ export function MarketSection(props: MarketSectionProps) {
         if (Array.isArray(body.groupOrder)) setGroupOrder(body.groupOrder)
         if (Array.isArray(body.favorites)) setFavoriteUrls(body.favorites.filter((url: unknown): url is string => typeof url === 'string'))
         if (Array.isArray(body.blocked)) setBlockedNames(body.blocked.filter((name: unknown): name is string => typeof name === 'string'))
+        if (Array.isArray(body.updateExempt)) setUpdateExemptNames(body.updateExempt.filter((name: unknown): name is string => typeof name === 'string'))
         setInstalledBundles(Array.isArray(body.bundles) ? body.bundles.filter((name: unknown): name is string => typeof name === 'string') : [])
         if (body.activation && typeof body.activation === 'object') setActivations(body.activation)
         const findings = body.diagnostics?.schema === 'dsh-market/diagnostics/v1'
@@ -2125,6 +2132,7 @@ export function MarketSection(props: MarketSectionProps) {
   const disabledSet = useMemo(() => new Set(disabledNames), [disabledNames])
   const favoriteUrlSet = useMemo(() => new Set(favoriteUrls), [favoriteUrls])
   const blockedNameSet = useMemo(() => new Set(blockedNames), [blockedNames])
+  const updateExemptSet = useMemo(() => new Set(updateExemptNames), [updateExemptNames])
   /** Effective switch state: market disable list ∪ user-patch-layer disables. */
   const effectiveDisabledSet = useMemo(
     () => new Set([...disabledNames, ...patchDisabledNames, ...unbundledNames]),
@@ -3440,6 +3448,45 @@ export function MarketSection(props: MarketSectionProps) {
       })
   }, [blockedNameSet, blockedNames, t])
 
+  const toggleUpdateExempt = useCallback((name: string) => {
+    const gen = ++updateExemptOpGen.current
+    const nextExempt = !updateExemptSet.has(name)
+    const previous = updateExemptNames
+    setUpdateExemptError(null)
+    setUpdateExemptNames((list) => {
+      if (nextExempt) return list.includes(name) ? list : [...list, name]
+      return list.filter(entry => entry !== name)
+    })
+    fetch(api('/dsh-market/update-exempt'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, exempt: nextExempt }),
+    })
+      .then(async (res) => {
+        const text = await res.text()
+        let body: { ok?: unknown; updateExempt?: unknown; error?: unknown } | null = null
+        if (text !== '') {
+          try { body = JSON.parse(text) as { ok?: unknown; updateExempt?: unknown; error?: unknown } } catch { /* non-JSON */ }
+        }
+        return { status: res.status, body }
+      })
+      .then(({ status, body }) => {
+        if (gen !== updateExemptOpGen.current) return
+        if (status === 200 && body?.ok === true && Array.isArray(body.updateExempt)) {
+          setUpdateExemptNames(body.updateExempt.filter((entry: unknown): entry is string => typeof entry === 'string'))
+          setUpdateExemptNotice(t(nextExempt ? 'updateExemptOn' : 'updateExemptOff'))
+          return
+        }
+        setUpdateExemptNames(previous)
+        setUpdateExemptError(typeof body?.error === 'string' ? body.error : t('updateExemptFailed'))
+      })
+      .catch((error: unknown) => {
+        if (gen !== updateExemptOpGen.current) return
+        setUpdateExemptNames(previous)
+        setUpdateExemptError(String(error))
+      })
+  }, [updateExemptSet, updateExemptNames, t])
+
   const clearStaleFavorites = useCallback(() => {
     if (favoriteStale.length === 0) return
     const gen = ++favoriteOpGen.current
@@ -3889,13 +3936,19 @@ export function MarketSection(props: MarketSectionProps) {
   // gate because the source switch cannot be rolled back.
   const batchUpdatableNames = updatableNames.filter(name => updates[name]?.restoreRequired !== true)
   const ignoredUpdateSet = useMemo(() => new Set(ignoredUpdateNames), [ignoredUpdateNames])
-  const reminderUpdatableNames = updatableNames.filter(name => !ignoredUpdateSet.has(name) && !installedBlocked(name))
-  const reminderBatchUpdatableNames = batchUpdatableNames.filter(name => !ignoredUpdateSet.has(name) && !installedBlocked(name))
+  // Session dismissals die with the boot. The saved list does not. Reminders
+  // read the union; the row still shows that an update exists (#728).
+  const quietUpdateSet = useMemo(
+    () => new Set([...ignoredUpdateNames, ...updateExemptNames]),
+    [ignoredUpdateNames, updateExemptNames],
+  )
+  const reminderUpdatableNames = updatableNames.filter(name => !quietUpdateSet.has(name) && !installedBlocked(name))
+  const reminderBatchUpdatableNames = batchUpdatableNames.filter(name => !quietUpdateSet.has(name) && !installedBlocked(name))
   const selfUpdateAvailable = updates[selfName]?.updateAvailable === true && !updatedNames.includes(selfName)
   const reminderUpdateNames = [
     ...(selfUpdateAvailable ? [selfName] : []),
     ...updatableNames,
-  ].filter(name => !ignoredUpdateSet.has(name) && !installedBlocked(name))
+  ].filter(name => !quietUpdateSet.has(name) && !installedBlocked(name))
   // The market manages itself from its own settings card (Settings → Plugins
   // → Plugin configuration), not as a row here — listing it in both places
   // read as two different controls for the same thing.
@@ -4192,8 +4245,8 @@ export function MarketSection(props: MarketSectionProps) {
         const aOn = effectiveDisabledSet.has(nameA) ? 0 : 1
         const bOn = effectiveDisabledSet.has(nameB) ? 0 : 1
         if (aOn !== bOn) return bOn - aOn
-        const aUp = isPluginUpdatable(nameA, String(specA), updates[nameA], updatedNames, ignoredUpdateSet) ? 1 : 0
-        const bUp = isPluginUpdatable(nameB, String(specB), updates[nameB], updatedNames, ignoredUpdateSet) ? 1 : 0
+        const aUp = isPluginUpdatable(nameA, String(specA), updates[nameA], updatedNames, quietUpdateSet) ? 1 : 0
+        const bUp = isPluginUpdatable(nameB, String(specB), updates[nameB], updatedNames, quietUpdateSet) ? 1 : 0
         return bUp - aUp
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `updatesLoaded` stands in for `updates`/`updatedNames`: reorder when the check lands, then hold (#631). `effectiveDisabledSet` only re-runs this when a disable state actually changed; the toggled row is the only one that moves.
@@ -4281,6 +4334,7 @@ export function MarketSection(props: MarketSectionProps) {
         onSelect={(id) => {
           setInstalledMenuName(null)
           if (id === 'block') toggleBlock(blockToggleName(aliases))
+          if (id === 'update-exempt') toggleUpdateExempt(name)
           if (id === 'uninstall' && !uninstallBusy) setRemoveConfirm(name)
         }}
         align="end"
@@ -4295,6 +4349,7 @@ export function MarketSection(props: MarketSectionProps) {
         )}
         items={[
           { id: 'block', label: hidden ? t('blockRemove') : t('blockAdd') },
+          { id: 'update-exempt', label: updateExemptSet.has(name) ? t('updateExemptRemove') : t('updateExemptAdd') },
           { type: 'separator', id: 'uninstall-sep' },
           { id: 'uninstall', label: removing ? t('uninstalling') : t('uninstall'), danger: true, disabled: uninstallBusy },
         ]}
@@ -4964,7 +5019,7 @@ export function MarketSection(props: MarketSectionProps) {
             const self = installed['dshmarket'] !== undefined ? 'dshmarket' : 'dsh-market'
             const status = updates[self]
             return status && status.updateAvailable && !updatedNames.includes(self)
-              && !ignoredUpdateSet.has(self)
+              && !quietUpdateSet.has(self)
               && (
                 <Button
                   variant="primary"
@@ -6114,7 +6169,7 @@ export function MarketSection(props: MarketSectionProps) {
                                         className={css.notesLink}
                                         onClick={() => openNotes(name, status.current ?? null, status.latest ?? null, repoUrl)}
                                       >{`▸ ${t('notesLink')}`}</button>
-                                      {bootId !== null && (
+                                      {bootId !== null && !updateExemptSet.has(name) && (
                                         ignoredUpdateSet.has(name)
                                           ? <span className={css.metaInline}>{t('updateNoticeIgnored')}</span>
                                           : (
@@ -6225,6 +6280,15 @@ export function MarketSection(props: MarketSectionProps) {
                                 {/* Status and the more menu stay one unit, so a wrap
                                     moves them together (#242). */}
                                 <span className={css.irowTrailing}>
+                                {updateExemptSet.has(name) && (
+                                  <button
+                                    type="button"
+                                    className={css.updateExemptMark}
+                                    title={t('updateExemptHint')}
+                                    aria-label={`${t('updateExemptRemove')} ${name}`}
+                                    onClick={() => toggleUpdateExempt(name)}
+                                  >{t('updateExemptMark')}</button>
+                                )}
                                 {!missing && status?.sourceMigration !== undefined && (
                                   <Button
                                     variant="outline"
@@ -6904,6 +6968,12 @@ export function MarketSection(props: MarketSectionProps) {
       )}
       {blockNotice !== null && (
         <Toast text={blockNotice} onDone={blockNoticeDone} />
+      )}
+      {updateExemptError !== null && (
+        <Toast text={localizeBilingual(updateExemptError, lang)} icon={<IconWarningOutline16 size={14} />} onDone={updateExemptErrorDone} />
+      )}
+      {updateExemptNotice !== null && (
+        <Toast text={updateExemptNotice} onDone={updateExemptNoticeDone} />
       )}
       {toggled !== null && (
         <Toast

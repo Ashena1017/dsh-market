@@ -546,6 +546,16 @@
               color:var(--dsw-alias-label-secondary,#6b7280)}
 .metaTagAction:hover:not(:disabled){color:var(--dsw-alias-brand-primary,#4f6ef7)}
 .metaTagAction:disabled{opacity:.5;cursor:default}
+/* A saved "don't remind me" (#728). Stronger than a status tag so the
+   choice is visible on the row, and clickable so undoing it is not only
+   inside the more menu. Not a warning: the update is still there. */
+.updateExemptMark{flex-shrink:0;border-radius:99px;padding:2px 8px;font-size:11px;line-height:16px;
+                  font-weight:600;white-space:nowrap;cursor:pointer;
+                  font-family:inherit;
+                  border:1px solid color-mix(in srgb, var(--dsw-alias-brand-primary,#4f6ef7) 40%, transparent);
+                  color:var(--dsw-alias-label-primary,#1f2328);
+                  background:color-mix(in srgb, var(--dsw-alias-brand-primary,#4f6ef7) 14%, var(--dsw-alias-bg-layer-1,#fff))}
+.updateExemptMark:hover{border-color:var(--dsw-alias-brand-primary,#4f6ef7)}
 /* Installed-row header: title left, local-dev badge top-right. */
 .irowHead{display:flex;align-items:flex-start;gap:8px;min-width:0}
 .irowHead .irowName{flex:1 1 0;min-width:0}

@@ -134,6 +134,28 @@ describe('market state.json (#60)', () => {
     }
   })
 
+  /** #728. Same optional-field contract as blocked: a caller that never
+   * heard of the persistent "don't remind me" list must not erase it. */
+  it('a partial write keeps update-exempt names that the caller never mentioned', () => {
+    const dir = stateDir()
+    try {
+      writeMarketState(dir, {
+        disabled: new Set(), groups: {}, groupOrder: [],
+        updateExempt: ['dsh-loop', 'dsh-notify'],
+      })
+      expect(readMarketState(dir).updateExempt).toEqual(['dsh-loop', 'dsh-notify'])
+
+      writeMarketState(dir, { disabled: new Set(['a']), groups: {}, groupOrder: [] })
+      expect(readMarketState(dir).updateExempt).toEqual(['dsh-loop', 'dsh-notify'])
+
+      writeMarketState(dir, { disabled: new Set(), groups: {}, groupOrder: [], updateExempt: [] })
+      expect(readMarketState(dir).updateExempt).toEqual([])
+      expect('updateExempt' in readRaw(dir)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('persists blocked package names and drops junk on read', () => {
     const dir = stateDir()
     try {
@@ -157,7 +179,7 @@ describe('market state.json (#60)', () => {
     const dir = stateDir()
     try {
       writeFileSync(join(dir, '.dsh-market', 'state.json'), 'not json')
-      expect(readMarketState(dir)).toEqual({ disabled: new Set(), groups: {}, groupOrder: [], notes: {}, favorites: [], blocked: [] })
+      expect(readMarketState(dir)).toEqual({ disabled: new Set(), groups: {}, groupOrder: [], notes: {}, favorites: [], blocked: [], updateExempt: [] })
       writeFileSync(join(dir, '.dsh-market', 'state.json'), JSON.stringify({
         disabled: ['a', 'a', '', 7],
         groups: { work: ['x', 'x', 3] },

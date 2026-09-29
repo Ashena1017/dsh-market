@@ -4912,6 +4912,65 @@ describe('boot-scoped update reminder dismissals (#419)', () => {
     expect(sessionStorage.getItem('dshm-updates-ignored')).toBeNull()
   })
 
+  it('a saved do-not-remind list quiets prompts without hiding the update', async () => {
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web', installed, live: Object.keys(installed),
+        updateExempt: ['dsh-loop'],
+      },
+      '/dsh-market/status': { active: false, busy: false, pnpm: true, boot: 'boot-1', restart: true, installed },
+      '/dsh-market/updates': { updates: updateStatuses },
+    })
+    render(<MarketSection {...props()} />)
+
+    expect(await screen.findByRole('button', { name: /Update all \(1\)/ })).toBeTruthy()
+    expect(updateDot()).toBeTruthy()
+
+    fireEvent.click(installedTab())
+    expect(await screen.findByRole('button', { name: `${en.updateExemptRemove} dsh-loop` })).toBeTruthy()
+    expect(screen.getByText(en.updateExemptMark)).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: en.update })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: re(en.notesLink) })).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: `${en.ignoreUpdateNotice} dsh-loop` })).toBeNull()
+    expect(screen.getByRole('button', { name: `${en.ignoreUpdateNotice} dsh-notify` })).toBeTruthy()
+  })
+
+  it('saves the choice from the row menu and says the new version stays listed', async () => {
+    stubFetch({
+      '/dsh-market/installed': { profile: 'web', installed, live: Object.keys(installed) },
+      '/dsh-market/status': { active: false, busy: false, pnpm: true, boot: 'boot-1', restart: true, installed },
+      '/dsh-market/updates': { updates: updateStatuses },
+      '/dsh-market/update-exempt': (body: any) => ({
+        ok: true,
+        updateExempt: body?.exempt === true ? [body.name] : [],
+      }),
+    })
+    render(<MarketSection {...props()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /^Installed/ }))
+    let row: HTMLElement | null = await screen.findByText('dsh-loop')
+    while (row !== null && within(row).queryByRole('button', { name: en.groupMore }) === null) row = row.parentElement
+    fireEvent.click(within(row!).getByRole('button', { name: en.groupMore }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: en.updateExemptAdd }))
+
+    await waitFor(() => {
+      const call = fetchCalls.find(entry => entry.path === '/dsh-market/update-exempt')
+      expect(call?.body).toEqual({ name: 'dsh-loop', exempt: true })
+    })
+    expect(await screen.findByText(en.updateExemptOn)).toBeTruthy()
+    const mark = screen.getByRole('button', { name: `${en.updateExemptRemove} dsh-loop` })
+    expect(screen.getAllByRole('button', { name: en.update })).toHaveLength(2)
+
+    fireEvent.click(mark)
+    await waitFor(() => {
+      const calls = fetchCalls.filter(entry => entry.path === '/dsh-market/update-exempt')
+      expect(calls.at(-1)?.body).toEqual({ name: 'dsh-loop', exempt: false })
+    })
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: `${en.updateExemptRemove} dsh-loop` })).toBeNull()
+    })
+    expect(screen.getAllByRole('button', { name: en.update })).toHaveLength(2)
+  })
+
   it('fails open when the stored dismissal is malformed', async () => {
     sessionStorage.setItem('dshm-updates-ignored', '{not-json')
     stubUpdateReminders()
