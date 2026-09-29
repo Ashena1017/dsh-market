@@ -866,19 +866,44 @@ function useMediaWide(): boolean {
  * actually overflows the clamp: a two-line description has nothing to
  * "expand", so no button beats a button that does nothing.
  */
-function CardDesc({ text, t }: { text: string; t: Translate }) {
+function CardDesc({ text, t, lines = 5, className, textClassName }: {
+  text: string
+  t: Translate
+  lines?: 3 | 5
+  className?: string
+  textClassName?: string
+}) {
   const ref = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState(false)
   const [canExpand, setCanExpand] = useState(false)
+  const base = textClassName === undefined ? css.desc : `${css.desc} ${textClassName}`
+  const clamp = lines === 3 ? css.descClamp3 : css.descClamp
   useLayoutEffect(() => {
     const el = ref.current
     if (el === null) return
-    setCanExpand(el.scrollHeight > el.clientHeight + 1)
-  }, [text])
+    // Measured while clamped only: expanded, scrollHeight equals clientHeight
+    // and would hide the button that collapses it again.
+    const measure = () => {
+      if (!el.classList.contains(clamp)) return
+      setCanExpand(el.scrollHeight > el.clientHeight + 1)
+    }
+    measure()
+    // A column width change re-wraps the text, so the answer can flip.
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [text, clamp])
   return (
-    <div>
-      <div ref={ref} className={expanded ? css.desc : `${css.desc} ${css.descClamp}`}>{text}</div>
-      {canExpand && (
+    <div className={className}>
+      <div ref={ref} className={expanded ? base : `${base} ${clamp}`}>{text}</div>
+      {canExpand && lines === 3 && (
+        <button type="button" className={css.descMore} onClick={() => setExpanded(e => !e)}>
+          {expanded ? t('descCollapse') : t('descMore')}
+          {expanded ? <IconChevronUpOutline14 size={12} /> : <IconChevronRightOutline14 size={12} />}
+        </button>
+      )}
+      {canExpand && lines === 5 && (
         <button
           type="button"
           className={css.descToggle}
@@ -1244,6 +1269,38 @@ function ConfirmCopyButton({ text, label, copiedLabel }: { text: string, label: 
   )
 }
 
+/** Stroke glyphs the host primitives do not ship. They inherit the text colour. */
+function IconPlus({ size = 14 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 16 16" width={size} height={size} aria-hidden="true" focusable="false">
+      <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/** Reminders off (Lucide `bell-off` geometry): the body breaks where the slash crosses it. */
+function IconBellOff({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M10.268 21a2 2 0 0 0 3.464 0" />
+      <path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742" />
+      <path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05" />
+      <path d="m2 2 20 20" />
+    </svg>
+  )
+}
+
 /** Design-spec warning mark: filled amber triangle, same visual size as the
  * terminal badge above it. Title stays body ink. */
 function ConfirmWarnIcon() {
@@ -1372,6 +1429,42 @@ function isRecordOfRecords(value: unknown): value is Record<string, { spec?: str
 function sameInstalledMap(left: InstalledMap, right: InstalledMap): boolean {
   const names = Object.keys(left)
   return names.length === Object.keys(right).length && names.every(name => left[name] === right[name])
+}
+
+/** Same cap as `MAX_NOTE` in hot.ts; the server trims anything longer. */
+const NOTE_MAX = 200
+
+/** `latest` is a semver for npm installs and a commit sha for github ones. */
+function displayLatest(latest: string): string {
+  if (/^\d/.test(latest)) return 'v' + latest
+  if (/^[0-9a-f]{12,40}$/i.test(latest)) return latest.slice(0, 7)
+  return latest
+}
+
+/** The tail of a local checkout path; the full path stays in the title and the copy button. */
+function shortLocalPath(path: string): string {
+  const parts = path.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
+  return parts.length <= 2 ? path : '…/' + parts.slice(-2).join('/')
+}
+
+/** A relative spec is resolved against the profile directory, so copying it elsewhere is meaningless. */
+function isAbsoluteLocalPath(path: string): boolean {
+  return /^(?:\/|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(path)
+}
+
+/** `file:///abs` keeps one leading slash, like `file:/abs`. */
+function localPathOf(spec: string): string | null {
+  const match = /^(?:link|file):(?:\/\/(?=\/))?(.+)$/i.exec(spec)
+  return match !== null ? match[1] : null
+}
+
+/**
+ * A development checkout or local package. A generation is the desktop host's
+ * own install (#497) and is never one, even though its spec is a link:.
+ */
+function isLocalDev(spec: string, status: UpdateStatus | undefined): boolean {
+  if (status?.kind === 'generation' || isGenerationSpec(spec)) return false
+  return /^(?:link|file):/i.test(spec) || status?.kind === 'linked'
 }
 
 /**
@@ -3965,6 +4058,17 @@ export function MarketSection(props: MarketSectionProps) {
     })
   }, [bootId])
 
+  const unignoreUpdateNotice = useCallback((name: string) => {
+    if (bootId === null) return
+    setIgnoredUpdateNames(current => {
+      const next = current.filter(n => n !== name)
+      try {
+        sessionStorage.setItem(IGNORED_UPDATES_SESSION_KEY, JSON.stringify({ boot: bootId, names: next }))
+      } catch { /* storage unavailable: the change holds for this mount */ }
+      return next
+    })
+  }, [bootId])
+
   const doUpdateAll = useCallback(() => {
     const names = reminderBatchUpdatableNames.slice()
     setUpdatingAll(true)
@@ -4327,14 +4431,30 @@ export function MarketSection(props: MarketSectionProps) {
     const hidden = aliases.some(alias => blockedNameSet.has(alias))
     const removing = removingName === name
     const uninstallBusy = removingName !== null || busyUrl !== null || updatingName !== null
+    const spec = String(installed[name] ?? '')
+    const status = updates[name]
+    const localDev = isLocalDev(spec, status)
+    const exempt = updateExemptSet.has(name)
+    const updatable = isPluginUpdatable(name, spec, status, updatedNames)
+    // A plain checkout has no release feed to remind about. A local package the
+    // catalog can replace does (restoreRequired), and an existing entry stays
+    // reachable so it can still be removed.
+    const showExempt = !localDev || exempt || updatable
+    // Undo stays on the row ("恢复提醒"); only the dismissal itself lives here.
+    const showBootIgnore = bootId !== null && !exempt && !ignoredUpdateSet.has(name) && updatable
+    // With an update pending, the action band already offers the same switch
+    // as its primary button; one entry, one name.
+    const showRestore = localDev && !(status?.updateAvailable === true && status.restoreRequired === true)
     return (
       <Menu
         open={installedMenuName === name}
         onClose={() => setInstalledMenuName(null)}
         onSelect={(id) => {
           setInstalledMenuName(null)
+          if (id === 'restore-online' && data !== null && !uninstallBusy) askRestore(name)
           if (id === 'block') toggleBlock(blockToggleName(aliases))
           if (id === 'update-exempt') toggleUpdateExempt(name)
+          if (id === 'ignore-boot') ignoreUpdateNotices([name])
           if (id === 'uninstall' && !uninstallBusy) setRemoveConfirm(name)
         }}
         align="end"
@@ -4348,9 +4468,11 @@ export function MarketSection(props: MarketSectionProps) {
           >···</Button>
         )}
         items={[
+          ...(showRestore ? [{ id: 'restore-online', label: t('restoreOnline'), disabled: data === null || uninstallBusy }] : []),
           { id: 'block', label: hidden ? t('blockRemove') : t('blockAdd') },
-          { id: 'update-exempt', label: updateExemptSet.has(name) ? t('updateExemptRemove') : t('updateExemptAdd') },
-          { type: 'separator', id: 'uninstall-sep' },
+          ...(showBootIgnore ? [{ id: 'ignore-boot', label: t('ignoreUpdateNotice') }] : []),
+          ...(showExempt ? [{ id: 'update-exempt', label: exempt ? t('updateExemptRemove') : t('updateExemptAdd') }] : []),
+          { type: 'separator' as const, id: 'uninstall-sep' },
           { id: 'uninstall', label: removing ? t('uninstalling') : t('uninstall'), danger: true, disabled: uninstallBusy },
         ]}
       />
@@ -6048,7 +6170,7 @@ export function MarketSection(props: MarketSectionProps) {
                             // "local" tag and no restore — the host would put the
                             // generation straight back.
                             const generation = status?.kind === 'generation' || isGenerationSpec(String(spec))
-                            const localDev = !generation && (/^(?:link|file):/i.test(String(spec)) || status?.kind === 'linked')
+                            const localDev = isLocalDev(String(spec), status)
                             const act = activations[name]
                             const meta = act !== undefined ? activationMeta(act.state, t, act.dependencyOf) : null
                             const version = status && status.version ? 'v' + status.version : ''
@@ -6058,6 +6180,7 @@ export function MarketSection(props: MarketSectionProps) {
                             // link:, a tag — is the only place the row says where
                             // the plugin came from, so it stays.
                             const specRedundant = version !== '' && /^[\^~]?\d/.test(specText)
+                            const localPath = localPathOf(specText)
                             const ghSpec = /^github:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:#|$)/.exec(specText)
                             const repoUrl = entry !== undefined ? entry.url : ghSpec !== null ? 'https://github.com/' + ghSpec[1] : null
                             const off = effectiveDisabledSet.has(name)
@@ -6089,17 +6212,38 @@ export function MarketSection(props: MarketSectionProps) {
                                         : name}
                                     </span>
                                     {entry?.deprecated === true && <span className={css.depBadge}>{t('deprecatedBadge')}</span>}
-                                    {version && <span className={css.owner} title={version}>{version}</span>}
                                   </div>
-                                  {localDev && (
-                                    <span className={css.irowDevTag} title={t('linkedDev')} role="status">{t('linkedDev')}</span>
+                                  {!missing && name !== 'dsh-market' && name !== 'dshmarket' && (
+                                    <span className={css.irowMenu}>{renderInstalledBlockMenu(name)}</span>
                                   )}
                                   </div>
+                                  {(version !== '' || localDev) && (
+                                    <div className={css.irowMeta}>
+                                      {[version, localDev ? t('linkedDev') : ''].filter(Boolean).join(' · ')}
+                                    </div>
+                                  )}
                                   {specRedundant
                                     ? null
-                                    : repoUrl !== null
-                                      ? <a className={`${css.spec} ${css.src}`} href={repoUrl} target="_blank" rel="noreferrer">{specText}</a>
-                                      : <div className={css.spec}>{specText}</div>}
+                                    : localPath !== null
+                                      ? (
+                                          <div className={css.irowPath}>
+                                            <span className={css.irowPathIcon}><IconFolderOpen16 size={14} /></span>
+                                            <span className={css.spec} title={localPath}>{shortLocalPath(localPath)}</span>
+                                            {isAbsoluteLocalPath(localPath) && (
+                                              <span className={css.irowPathCopy}>
+                                                <ConfirmCopyButton text={localPath} label={t('copyPath')} copiedLabel={t('pathCopied')} />
+                                              </span>
+                                            )}
+                                          </div>
+                                        )
+                                      : repoUrl !== null
+                                        ? (
+                                            <div className={css.irowPath}>
+                                              <span className={css.irowPathIcon}><IconLinkOutline14 size={14} /></span>
+                                              <a className={`${css.spec} ${css.src}`} href={repoUrl} target="_blank" rel="noreferrer">{specText}</a>
+                                            </div>
+                                          )
+                                        : <div className={css.spec}>{specText}</div>}
                                   {/* The user's own note REPLACES the author's
                                       description (#347): a catalog blurb answers
                                       "what is this", written for strangers and
@@ -6114,17 +6258,22 @@ export function MarketSection(props: MarketSectionProps) {
                                           <Input
                                             className={css.noteInput}
                                             value={noteDraft}
-                                            maxLength={200}
+                                            maxLength={NOTE_MAX}
                                             autoFocus
                                             placeholder={t('notePlaceholder')}
                                             onChange={e => setNoteDraft(e.target.value)}
                                             onKeyDown={(e) => {
+                                              // Enter while an IME is composing commits the candidate, not the note.
+                                              if (e.nativeEvent.isComposing || e.keyCode === 229) return
                                               if (e.key === 'Enter') saveNote(name, noteDraft)
                                               if (e.key === 'Escape') setNotingName(null)
                                             }}
                                           />
-                                          <Button variant="outline" size="sm" onClick={() => saveNote(name, noteDraft)}>{t('noteSave')}</Button>
-                                          <Button variant="ghost" size="sm" onClick={() => setNotingName(null)}>{t('cancel')}</Button>
+                                          <div className={css.noteEditBar}>
+                                            <span className={css.noteCount} aria-hidden="true">{`${noteDraft.length}/${NOTE_MAX}`}</span>
+                                            <Button variant="ghost" size="sm" onClick={() => setNotingName(null)}>{t('cancel')}</Button>
+                                            <Button variant="primary" size="sm" onClick={() => saveNote(name, noteDraft)}>{t('noteSave')}</Button>
+                                          </div>
                                         </div>
                                       )
                                     : (() => {
@@ -6135,7 +6284,14 @@ export function MarketSection(props: MarketSectionProps) {
                                         return (
                                           <div className={`${css.desc} ${css.descTight} ${css.noteRow}`}>
                                             {shown !== '' && (
-                                              <span className={note !== undefined && !theirs ? css.noteMine : undefined}>{shown}</span>
+                                              <CardDesc
+                                                key={shown}
+                                                text={shown}
+                                                t={t}
+                                                lines={3}
+                                                className={css.irowDesc}
+                                                textClassName={note !== undefined && !theirs ? css.noteMine : undefined}
+                                              />
                                             )}
                                             {note !== undefined && authored !== '' && (
                                               <button
@@ -6148,41 +6304,76 @@ export function MarketSection(props: MarketSectionProps) {
                                             )}
                                             <button
                                               type="button"
-                                              className={`${css.noteToggle} ${css.noteAction}`}
-                                              title={note === undefined ? t('noteAdd') : t('noteEdit')}
-                                              aria-label={note === undefined ? t('noteAdd') : t('noteEdit')}
+                                              className={css.noteAdd}
                                               onClick={() => { setNoteDraft(note ?? ''); setNotingName(name) }}
-                                            >{note === undefined ? t('noteAdd') : t('noteEdit')}</button>
+                                            >
+                                              {note === undefined && <IconPlus size={14} />}
+                                              {note === undefined ? t('noteAdd') : t('noteEdit')}
+                                            </button>
                                           </div>
                                         )
                                       })()}
-                                  {/* Update-notes entry (#294). Only a row with an
-                                      update pending renders it — a plugin that is
-                                      up to date has nothing to preview — and it is
-                                      one quiet line in the flow the row already
-                                      reserves for conditional content, so rows
-                                      without it are pixel-identical to before. */}
-                                  {isPluginUpdatable(name, String(spec), status, []) && (
-                                    <div className={css.noteRow}>
-                                      <button
-                                        type="button"
-                                        className={css.notesLink}
-                                        onClick={() => openNotes(name, status.current ?? null, status.latest ?? null, repoUrl)}
-                                      >{`▸ ${t('notesLink')}`}</button>
-                                      {bootId !== null && !updateExemptSet.has(name) && (
-                                        ignoredUpdateSet.has(name)
-                                          ? <span className={css.metaInline}>{t('updateNoticeIgnored')}</span>
-                                          : (
-                                              <button
-                                                type="button"
-                                                className={css.noteToggle}
-                                                aria-label={`${t('ignoreUpdateNotice')} ${name}`}
-                                                onClick={() => ignoreUpdateNotices([name])}
-                                              >{t('ignoreUpdateNotice')}</button>
-                                            )
-                                      )}
-                                    </div>
-                                  )}
+                                  {/* Update and reminder lines (#294, #728). An up-to-date row
+                                      with reminders on renders neither. */}
+                                  {(() => {
+                                    const updatable = isPluginUpdatable(name, String(spec), status, updatedNames)
+                                    const exempt = updateExemptSet.has(name)
+                                    if (!updatable && !exempt) return null
+                                    const ignored = !exempt && bootId !== null && ignoredUpdateSet.has(name)
+                                    const sep = <span className={css.irowStatusSep} aria-hidden="true">·</span>
+                                    return (
+                                      <>
+                                        {/* The fact and the reminder are separate lines: silencing one
+                                            must never read as hiding the other (#728). */}
+                                        {updatable && (
+                                          <div className={css.irowStatus}>
+                                            {/* A generation's newer release is already stated in the action band. */}
+                                            {!generation && (
+                                              <span className={css.irowStatusPart}>
+                                                <span className={css.irowStatusFact}>
+                                                  {status?.latest != null ? t('hostUpdateReady').replace('{0}', displayLatest(status.latest)) : t('updateAvailableShort')}
+                                                </span>
+                                                {sep}
+                                              </span>
+                                            )}
+                                            <button
+                                              type="button"
+                                              className={css.notesLink}
+                                              onClick={() => openNotes(name, status?.current ?? null, status?.latest ?? null, repoUrl)}
+                                            >{`${t('notesLink')} ›`}</button>
+                                          </div>
+                                        )}
+                                        {(exempt || ignored) && (
+                                          <div className={css.irowStatus}>
+                                            <span className={css.irowStatusIcon}><IconBellOff size={16} /></span>
+                                            {exempt
+                                              ? <span className={css.metaInline} title={t('updateExemptHint')} role="status">{t('updateExemptMark')}</span>
+                                              : <span className={css.metaInline} role="status">{t('updateNoticeIgnored')}</span>}
+                                            <span className={css.irowStatusAction}>
+                                              {exempt
+                                                ? (
+                                                    <button
+                                                      type="button"
+                                                      className={css.noteToggle}
+                                                      title={t('updateExemptHint')}
+                                                      aria-label={`${t('updateExemptRestore')} ${name}`}
+                                                      onClick={() => toggleUpdateExempt(name)}
+                                                    >{t('updateExemptRestore')}</button>
+                                                  )
+                                                : (
+                                                    <button
+                                                      type="button"
+                                                      className={css.noteToggle}
+                                                      aria-label={`${t('updateExemptRestore')} ${name}`}
+                                                      onClick={() => unignoreUpdateNotice(name)}
+                                                    >{t('updateExemptRestore')}</button>
+                                                  )}
+                                            </span>
+                                          </div>
+                                        )}
+                                      </>
+                                    )
+                                  })()}
                                   {!off && act !== undefined && meta !== null && (
                                         <div className={css.act}>
                                           {/* Only a state the switch does NOT already show earns a
@@ -6277,18 +6468,8 @@ export function MarketSection(props: MarketSectionProps) {
                                     </>
                                   )
                                 })()}
-                                {/* Status and the more menu stay one unit, so a wrap
-                                    moves them together (#242). */}
+                                {/* The status tags stay one unit, so a wrap moves them together (#242). */}
                                 <span className={css.irowTrailing}>
-                                {updateExemptSet.has(name) && (
-                                  <button
-                                    type="button"
-                                    className={css.updateExemptMark}
-                                    title={t('updateExemptHint')}
-                                    aria-label={`${t('updateExemptRemove')} ${name}`}
-                                    onClick={() => toggleUpdateExempt(name)}
-                                  >{t('updateExemptMark')}</button>
-                                )}
                                 {!missing && status?.sourceMigration !== undefined && (
                                   <Button
                                     variant="outline"
@@ -6319,19 +6500,9 @@ export function MarketSection(props: MarketSectionProps) {
                                             >{status.restoreRequired === true ? t('restoreOnline') : t('update')}</Button>
                                           )
                                         : localDev
-                                          ? (
-                                              <button
-                                                type="button"
-                                                className={css.metaTagAction}
-                                                title={`${t('restore')} — ${t('restoreOnline')}`}
-                                                aria-label={t('restore')}
-                                                disabled={data === null || removingName !== null || busyUrl !== null || updatingName !== null}
-                                                onClick={() => askRestore(name)}
-                                              >{t('restore')}</button>
-                                            )
+                                          ? null
                                           : <span className={css.metaTag} title={t('upToDate')}>{t('upToDate')}</span>}
                                 {removingName === name && <span className={css.metaTag}>{t('uninstalling')}</span>}
-                                {!missing && name !== 'dsh-market' && name !== 'dshmarket' && renderInstalledBlockMenu(name)}
                                 </span>
                                 </div>
                               </div>

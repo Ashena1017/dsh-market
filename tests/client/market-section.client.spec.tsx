@@ -77,6 +77,19 @@ const LOCALE_SNAPSHOT = { active: 'en' }
 /** Escape a locale string so it can be used inside a RegExp literal. */
 const re = (s: string) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
 
+/** Open the "···" menu on one installed row, found by walking up from its name. */
+async function openRowMenu(name: string) {
+  let row: HTMLElement | null = (await screen.findAllByText(name)).at(-1) ?? null
+  while (row !== null && within(row).queryByRole('button', { name: en.groupMore }) === null) row = row.parentElement
+  fireEvent.click(within(row!).getByRole('button', { name: en.groupMore }))
+}
+
+/** "重启前不再提醒" for one row, from its menu. */
+async function ignoreRowUntilRestart(name: string) {
+  await openRowMenu(name)
+  fireEvent.click(await screen.findByRole('menuitem', { name: en.ignoreUpdateNotice }))
+}
+
 /** Installed-card uninstall lives in the card menu. The confirm dialog is still a button. */
 async function openCardUninstall() {
   fireEvent.click((await screen.findAllByRole('button', { name: en.groupMore }))[0]!)
@@ -2823,16 +2836,34 @@ describe('plugin notes (#347)', () => {
 
     const addNote = screen.getByRole('button', { name: en.noteAdd })
     // #399: this must read as an action, not as a third piece of the author
-    // description. The original/mine toggle deliberately remains quiet text.
-    expect(addNote.className).toMatch(/noteAction/)
+    // description: its own control with a plus mark. The original/mine toggle
+    // deliberately remains quiet text.
+    expect(addNote.className).toMatch(/noteAdd/)
+    expect(addNote.querySelector('svg')).toBeTruthy()
     fireEvent.click(addNote)
     fireEvent.change(screen.getByPlaceholderText(en.notePlaceholder), { target: { value: 'for project A' } })
     fireEvent.click(screen.getByRole('button', { name: en.noteSave }))
 
     // The note takes the description's place rather than sitting beside it.
     expect((await screen.findByText('for project A')).className).toMatch(/noteMine/)
-    expect(screen.getByRole('button', { name: en.noteEdit }).className).toMatch(/noteAction/)
+    expect(screen.getByRole('button', { name: en.noteEdit }).className).toMatch(/noteAdd/)
     await waitFor(() => expect(screen.queryByText('Loop task runner')).toBeNull())
+  })
+
+  it('does not save while an IME is still composing', async () => {
+    installedStub()
+    render(<MarketSection {...props()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Installed/ }))
+    fireEvent.click(await screen.findByRole('button', { name: en.noteAdd }))
+    const input = screen.getByPlaceholderText(en.notePlaceholder)
+    fireEvent.change(input, { target: { value: 'xiangmu' } })
+    // Enter here picks the pinyin candidate; the note is not finished.
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    expect(fetchCalls.some(call => call.path === '/dsh-market/note')).toBe(false)
+    expect(screen.getByPlaceholderText(en.notePlaceholder)).toBeTruthy()
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(fetchCalls.some(call => call.path === '/dsh-market/note')).toBe(true))
   })
 
   it('keeps the original one click away, and puts it back', async () => {
@@ -2886,13 +2917,13 @@ describe('plugin notes (#347)', () => {
     await screen.findByText('dsh-local')
 
     const addNote = screen.getByRole('button', { name: en.noteAdd })
-    expect(addNote.className).toMatch(/noteAction/)
+    expect(addNote.className).toMatch(/noteAdd/)
     fireEvent.click(addNote)
     fireEvent.change(screen.getByPlaceholderText(en.notePlaceholder), { target: { value: 'local dev fork' } })
     fireEvent.click(screen.getByRole('button', { name: en.noteSave }))
 
     expect((await screen.findByText('local dev fork')).className).toMatch(/noteMine/)
-    expect(screen.getByRole('button', { name: en.noteEdit }).className).toMatch(/noteAction/)
+    expect(screen.getByRole('button', { name: en.noteEdit }).className).toMatch(/noteAdd/)
   })
 })
 
@@ -3570,7 +3601,7 @@ describe('installed masonry layout (#273)', () => {
     // also hands `installed` a fresh identity — the poll does it through
     // `refreshInstalled()` — so that case would report the memo re-running for
     // an unrelated reason, not the freeze under test.)
-    fireEvent.click(screen.getByRole('button', { name: `${en.ignoreUpdateNotice} gamma` }))
+    await ignoreRowUntilRestart('gamma')
     await act(async () => {})
     expect(names()).toEqual(['gamma', 'alpha', 'beta', 'delta'])
   })
@@ -3651,6 +3682,16 @@ describe('browser page translation (#293)', () => {
 })
 
 describe('local-dev restore', () => {
+  /** Restore lives in the row's more menu: it replaces the checkout and cannot be undone. */
+  async function chooseRestoreRelease() {
+    fireEvent.click((await screen.findAllByRole('button', { name: en.groupMore }))[0]!)
+    const item = await screen.findByRole('menuitem', { name: en.restoreOnline })
+    await waitFor(() => {
+      expect(item.hasAttribute('disabled') || item.getAttribute('aria-disabled') === 'true').toBe(false)
+    })
+    fireEvent.click(item)
+  }
+
   it('confirms before switching a catalog-matched local package to its online source', async () => {
     stubFetch({
       '/dsh-market/registry': {
@@ -3684,7 +3725,6 @@ describe('local-dev restore', () => {
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-loop')
     fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
-    expect(screen.queryByRole('button', { name: en.restore })).toBeNull()
     fireEvent.click(await screen.findByRole('button', { name: en.restoreOnline }))
     expect(await screen.findByText((content: string) => content.includes(en.restoreNameOnlyHint.slice(0, 40)))).toBeTruthy()
     expect(fetchCalls.some(call => call.path === '/dsh-market/update')).toBe(false)
@@ -3696,6 +3736,32 @@ describe('local-dev restore', () => {
         && call.body?.restore === true,
       )).toBe(true)
     })
+  })
+
+  it('lets a replaceable local package silence its reminder, with one switch entry', async () => {
+    // It has a release feed (restoreRequired + updateAvailable) and so counts
+    // toward reminders; hiding the saved exemption would leave no way out.
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web', installed: { 'dsh-better-sidebar': 'file:/plugins/dsh-better-sidebar-0.16.1.tgz' }, live: [],
+      },
+      '/dsh-market/updates': {
+        updates: {
+          'dsh-better-sidebar': {
+            kind: 'linked', version: '0.16.1', current: '0.16.1', latest: '0.17.1',
+            updateAvailable: true, restoreRequired: true,
+          },
+        },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    expect(await screen.findByRole('button', { name: en.restoreOnline })).toBeTruthy()
+    await openRowMenu('dsh-better-sidebar')
+    expect(await screen.findByRole('menuitem', { name: en.updateExemptAdd })).toBeTruthy()
+    // The action band already carries the switch; the menu does not repeat it.
+    expect(screen.queryByRole('menuitem', { name: en.restoreOnline })).toBeNull()
   })
 
   it('leaves source switches out of Update all', async () => {
@@ -3790,7 +3856,7 @@ describe('local-dev restore', () => {
     // that reads as "the button did nothing".
     await screen.findByText('dsh-loop')
     fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
-    fireEvent.click(await screen.findByRole('button', { name: en.restore }))
+    await chooseRestoreRelease()
     expect(await screen.findByText((content: string) => content.includes(en.restoreNameOnlyHint.slice(0, 40)))).toBeTruthy()
     // The owner is on screen to be checked against, not buried in a link.
     expect(await screen.findByText((content: string) => content.includes('lynote-ai'))).toBeTruthy()
@@ -3808,12 +3874,16 @@ describe('local-dev restore', () => {
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-loop')
     fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    expect(await screen.findByText(`v1.0.0 · ${en.linkedDev}`)).toBeTruthy()
+    // `../dsh-loop` is relative to the profile; a copied copy would point nowhere.
+    expect(screen.getByText('../dsh-loop')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: en.copyPath })).toBeNull()
+    // No release feed behind a checkout: the saved do-not-remind has nothing to act on.
     fireEvent.click((await screen.findAllByRole('button', { name: en.groupMore }))[0]!)
     expect(await screen.findByRole('menuitem', { name: en.uninstall })).toBeTruthy()
-    expect(await screen.findByText(en.linkedDev)).toBeTruthy()
-    expect(screen.getByRole('status', { name: en.linkedDev })).toBeTruthy()
-    const restoreBtn = await screen.findByRole('button', { name: en.restore })
-    fireEvent.click(restoreBtn)
+    expect(screen.queryByRole('menuitem', { name: en.updateExemptAdd })).toBeNull()
+    fireEvent.click(screen.getAllByRole('button', { name: en.groupMore })[0]!)
+    await chooseRestoreRelease()
     expect(await screen.findByText((content: string) => content.includes(en.restoreNameOnlyHint.slice(0, 40)))).toBeTruthy()
     expect(fetchCalls.some(call => call.path === '/dsh-market/update')).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: en.restoreProceed }))
@@ -3822,6 +3892,56 @@ describe('local-dev restore', () => {
         call.path === '/dsh-market/update' && call.body?.name === 'dsh-loop' && call.body?.restore === true,
       )).toBe(true)
     })
+  })
+
+  it('shows the tail of a checkout path and copies the whole path', async () => {
+    const writeText = vi.fn(() => Promise.resolve())
+    const prevClip = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    try {
+      stubFetch({
+        '/dsh-market/installed': { profile: 'web', installed: { 'mystery-plug': 'link:/Users/me/work/plugins/mystery-plug' }, live: [] },
+        '/dsh-market/updates': { updates: { 'mystery-plug': { kind: 'linked', version: '0.1.14', updateAvailable: false } } },
+      })
+      render(<MarketSection {...props()} />)
+      fireEvent.click(await screen.findByRole('button', { name: /Installed/ }))
+      const path = await screen.findByText('…/plugins/mystery-plug')
+      expect(path.getAttribute('title')).toBe('/Users/me/work/plugins/mystery-plug')
+      expect(screen.getByText(`v0.1.14 · ${en.linkedDev}`)).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: en.copyPath }))
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('/Users/me/work/plugins/mystery-plug'))
+      expect(await screen.findByText(en.pathCopied)).toBeTruthy()
+    } finally {
+      if (prevClip !== undefined) Object.defineProperty(navigator, 'clipboard', prevClip)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+    }
+  })
+
+  it('clamps an installed description to three lines with an expand toggle', async () => {
+    const scrollHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+    const clientHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get: () => 200 })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 54 })
+    try {
+      stubFetch({
+        '/dsh-market/installed': { profile: 'web', installed: { 'dsh-loop': '^1.0.0' }, live: [] },
+        '/dsh-market/updates': { updates: { 'dsh-loop': { kind: 'npm', version: '1.0.0', updateAvailable: false } } },
+      })
+      const { container } = render(<MarketSection {...props()} />)
+      await screen.findByText('dsh-loop')
+      fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+      await waitFor(() => expect(container.querySelector('[class*="descClamp3"]')).toBeTruthy())
+      let row: HTMLElement | null = container.querySelector('[class*="descClamp3"]')
+      while (row !== null && within(row).queryByRole('button', { name: en.descMore }) === null) row = row.parentElement
+      fireEvent.click(within(row!).getByRole('button', { name: en.descMore }))
+      await waitFor(() => expect(within(row!).queryByRole('button', { name: en.descCollapse })).toBeTruthy())
+      expect(row!.querySelector('[class*="descClamp3"]')).toBeNull()
+    } finally {
+      if (scrollHeightDesc) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeightDesc)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight')
+      if (clientHeightDesc) Object.defineProperty(HTMLElement.prototype, 'clientHeight', clientHeightDesc)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight')
+    }
   })
 
   it('names a newer release for a host-installed generation without a button (#497)', async () => {
@@ -3844,8 +3964,9 @@ describe('local-dev restore', () => {
     // install. Neither is offered, and the row is not tagged as local work.
     expect(screen.queryByRole('button', { name: en.update })).toBeNull()
     expect(screen.queryByRole('button', { name: en.restoreOnline })).toBeNull()
-    expect(screen.queryByRole('button', { name: en.restore })).toBeNull()
     expect(screen.queryByText(en.linkedDev)).toBeNull()
+    openRowMenu('dsh-loop')
+    expect(screen.queryByRole('menuitem', { name: en.restoreOnline })).toBeNull()
   })
 
   it('does not offer restore when the linked plugin is not in the catalog', async () => {
@@ -3856,7 +3977,7 @@ describe('local-dev restore', () => {
     render(<MarketSection {...props()} />)
     fireEvent.click(await screen.findByRole('button', { name: /Installed/ }))
     expect(await screen.findByText('mystery-plug')).toBeTruthy()
-    fireEvent.click(await screen.findByRole('button', { name: en.restore }))
+    await chooseRestoreRelease()
     expect(await screen.findByText(en.restoreNoCatalog)).toBeTruthy()
     expect(screen.queryByRole('button', { name: en.restoreProceed })).toBeNull()
     expect(fetchCalls.some(call => call.path === '/dsh-market/update')).toBe(false)
@@ -3893,7 +4014,7 @@ describe('local-dev restore', () => {
     })
     render(<MarketSection {...props()} />)
     fireEvent.click(await screen.findByRole('button', { name: /Installed/ }))
-    fireEvent.click(await screen.findByRole('button', { name: en.restore }))
+    await chooseRestoreRelease()
     expect(await screen.findByText(en.restoreNoMatch)).toBeTruthy()
     expect(screen.queryByRole('button', { name: en.restoreProceed })).toBeNull()
     expect(fetchCalls.some(call => call.path === '/dsh-market/update')).toBe(false)
@@ -3908,14 +4029,14 @@ describe('local-dev restore', () => {
     })
     render(<MarketSection {...props()} />)
     fireEvent.click(await screen.findByRole('button', { name: /Installed/ }))
-    fireEvent.click(await screen.findByRole('button', { name: en.restore }))
+    await chooseRestoreRelease()
     expect(await screen.findByText((content: string) => content.includes(en.restoreNameOnlyHint.slice(0, 40)))).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: en.cancel }))
     expect(screen.queryByText((content: string) => content.includes(en.restoreNameOnlyHint.slice(0, 40)))).toBeNull()
     expect(fetchCalls.some(call => call.path === '/dsh-market/update')).toBe(false)
   })
 
-  it('deprecated installed rows still show replacement actions beside restore', async () => {
+  it('deprecated installed rows still show replacement actions, with restore in the menu', async () => {
     const DEPRECATED_WITH_REPLACEMENT = {
       updated: '', count: 2,
       categories: { tools: { en: 'Tools', zh: '工具' } },
@@ -3931,10 +4052,10 @@ describe('local-dev restore', () => {
     })
     render(<MarketSection {...props()} />)
     fireEvent.click(await screen.findByRole('button', { name: /Installed/ }))
-    expect(await screen.findByRole('button', { name: en.restore })).toBeTruthy()
-    expect(screen.getByRole('button', { name: en.viewReplacement })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: en.viewReplacement })).toBeTruthy()
     expect(screen.getByRole('button', { name: en.installReplacement })).toBeTruthy()
     fireEvent.click(screen.getAllByRole('button', { name: en.groupMore })[0]!)
+    expect(screen.getByRole('menuitem', { name: en.restoreOnline })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: en.uninstall })).toBeTruthy()
   })
 
@@ -3987,7 +4108,7 @@ describe('local-dev restore', () => {
     })
     render(<MarketSection {...props()} />)
     fireEvent.click(await screen.findByRole('button', { name: /Installed/ }))
-    fireEvent.click(await screen.findByRole('button', { name: en.restore }))
+    await chooseRestoreRelease()
     fireEvent.click(await screen.findByRole('button', { name: en.restoreProceed }))
     expect(await screen.findByText(re(en.buildsSkipped))).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: en.approveBuilds }))
@@ -4848,7 +4969,7 @@ describe('boot-scoped update reminder dismissals (#419)', () => {
     expect(updateDot()).toBeTruthy()
 
     fireEvent.click(installedTab())
-    fireEvent.click(await screen.findByRole('button', { name: `${en.ignoreUpdateNotice} dsh-loop` }))
+    await ignoreRowUntilRestart('dsh-loop')
 
     expect(JSON.parse(sessionStorage.getItem('dshm-updates-ignored')!)).toEqual({
       boot: 'boot-1', names: ['dsh-loop'],
@@ -4927,12 +5048,56 @@ describe('boot-scoped update reminder dismissals (#419)', () => {
     expect(updateDot()).toBeTruthy()
 
     fireEvent.click(installedTab())
-    expect(await screen.findByRole('button', { name: `${en.updateExemptRemove} dsh-loop` })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: `${en.updateExemptRestore} dsh-loop` })).toBeTruthy()
     expect(screen.getByText(en.updateExemptMark)).toBeTruthy()
     expect(screen.getAllByRole('button', { name: en.update })).toHaveLength(2)
     expect(screen.getAllByRole('button', { name: re(en.notesLink) })).toHaveLength(2)
-    expect(screen.queryByRole('button', { name: `${en.ignoreUpdateNotice} dsh-loop` })).toBeNull()
-    expect(screen.getByRole('button', { name: `${en.ignoreUpdateNotice} dsh-notify` })).toBeTruthy()
+    // A saved exemption already covers the boot dismissal, so the menu drops it.
+    await openRowMenu('dsh-loop')
+    expect(await screen.findByRole('menuitem', { name: en.updateExemptRemove })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: en.ignoreUpdateNotice })).toBeNull()
+    await openRowMenu('dsh-loop')
+    await openRowMenu('dsh-notify')
+    expect(await screen.findByRole('menuitem', { name: en.ignoreUpdateNotice })).toBeTruthy()
+  })
+
+  it('names the new version on the row and undoes a boot dismissal', async () => {
+    stubUpdateReminders()
+    render(<MarketSection {...props()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /^Installed/ }))
+    expect(await screen.findAllByText(en.hostUpdateReady.replace('{0}', 'v1.1.0'))).toHaveLength(2)
+
+    await ignoreRowUntilRestart('dsh-loop')
+    expect(await screen.findByText(en.updateNoticeIgnored)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: `${en.updateExemptRestore} dsh-loop` }))
+
+    await waitFor(() => expect(screen.queryByText(en.updateNoticeIgnored)).toBeNull())
+    expect(screen.queryByRole('button', { name: `${en.updateExemptRestore} dsh-loop` })).toBeNull()
+    expect(JSON.parse(sessionStorage.getItem('dshm-updates-ignored')!)).toEqual({ boot: 'boot-1', names: [] })
+    expect(await screen.findByRole('button', { name: /Update all \(2\)/ })).toBeTruthy()
+  })
+
+  it('keeps the saved mark on an up-to-date row, and adds no status line to other up-to-date rows', async () => {
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web', installed, live: Object.keys(installed),
+        updateExempt: ['dsh-loop'],
+      },
+      '/dsh-market/status': { active: false, busy: false, pnpm: true, boot: 'boot-1', restart: true, installed },
+      '/dsh-market/updates': {
+        updates: {
+          'dsh-loop': { kind: 'npm', version: '1.0.0', current: '1.0.0', latest: '1.0.0', updateAvailable: false },
+          'dsh-notify': { kind: 'npm', version: '1.0.0', current: '1.0.0', latest: '1.0.0', updateAvailable: false },
+        },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /^Installed/ }))
+    expect(await screen.findByText(en.updateExemptMark)).toBeTruthy()
+    expect(screen.getByRole('button', { name: `${en.updateExemptRestore} dsh-loop` })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: re(en.notesLink) })).toBeNull()
+    expect(screen.queryByRole('button', { name: re(en.ignoreUpdateNotice) })).toBeNull()
+    expect(screen.getAllByText(en.upToDate)).toHaveLength(2)
   })
 
   it('saves the choice from the row menu and says the new version stays listed', async () => {
@@ -4957,7 +5122,7 @@ describe('boot-scoped update reminder dismissals (#419)', () => {
       expect(call?.body).toEqual({ name: 'dsh-loop', exempt: true })
     })
     expect(await screen.findByText(en.updateExemptOn)).toBeTruthy()
-    const mark = screen.getByRole('button', { name: `${en.updateExemptRemove} dsh-loop` })
+    const mark = screen.getByRole('button', { name: `${en.updateExemptRestore} dsh-loop` })
     expect(screen.getAllByRole('button', { name: en.update })).toHaveLength(2)
 
     fireEvent.click(mark)
@@ -4966,7 +5131,7 @@ describe('boot-scoped update reminder dismissals (#419)', () => {
       expect(calls.at(-1)?.body).toEqual({ name: 'dsh-loop', exempt: false })
     })
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: `${en.updateExemptRemove} dsh-loop` })).toBeNull()
+      expect(screen.queryByRole('button', { name: `${en.updateExemptRestore} dsh-loop` })).toBeNull()
     })
     expect(screen.getAllByRole('button', { name: en.update })).toHaveLength(2)
   })
@@ -5897,9 +6062,9 @@ describe('restart banner counts only restart-requiring updates (#558)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
     await screen.findAllByRole('button', { name: en.update }, { timeout: 5000 })
     return (name: string) => {
-      const rows = [...document.querySelectorAll('div[class*="irow"]')]
-        .filter(r => r.querySelector('button') && (r.textContent ?? '').includes(name))
-      const row = rows[rows.length - 1] as HTMLElement | undefined
+      const rows = [...document.querySelectorAll<HTMLElement>('div[class*="irow"]')]
+        .filter(r => within(r).queryByRole('button', { name: en.update }) && (r.textContent ?? '').includes(name))
+      const row = rows[rows.length - 1]
       if (!row) throw new Error(`no installed row found for ${name}`)
       return within(row).getByRole('button', { name: en.update })
     }
