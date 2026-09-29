@@ -161,15 +161,26 @@
 .confirmPanelRow:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4176e6);outline-offset:-2px}
 .confirmPanelIcon{display:inline-flex;flex:none;color:var(--fold-ink)}
 .confirmTerminalIcon{display:block;flex:none;color:var(--fold-ink)}
-.confirmTerminalPrompt{stroke:var(--fold-on-ink)}
+.confirmTerminalPrompt{stroke:var(--fold-on-ink);fill:none}
+.confirmTerminalDot{fill:var(--fold-on-ink)}
 .confirmPanelTitle{flex:1;min-width:0;font-size:13px;line-height:20px;color:var(--fold-ink)}
 .confirmPanelChevron{flex:none;color:var(--dsw-alias-label-tertiary,#8b93a1)}
 .confirmPanelBody{padding:0 12px 10px 16px}
-.confirmPanel .cmd{margin:0;padding:0;background:transparent;border-radius:0}
-.confirmPanel .caps{padding:0}
-.installCaution{background:color-mix(in srgb, var(--dsw-alias-state-warn-primary, #b45309) 12%, transparent);border-radius:8px;padding:12px 14px}
+.confirmCmd{display:flex;align-items:center;gap:8px}
+.confirmPanel .cmd{flex:1;min-width:0;margin:0;padding:0;background:transparent;border-radius:0;line-height:24px}
+.confirmCopied{flex:none;font-size:12px;line-height:24px;color:var(--dsw-alias-state-success-primary,#22c55e);white-space:nowrap}
+.confirmCopy{display:inline-flex;flex:none;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--fold-ink,#1c1d1f);cursor:pointer}
+.confirmCopy:hover{background:color-mix(in srgb, var(--fold-ink, #1c1d1f) 8%, transparent)}
+.confirmCopy:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4176e6);outline-offset:1px}
+.confirmPanel .caps{gap:6px;padding:0}
+.confirmPanel .caps .capChip{background:var(--fold-on-ink,#fff);border:1px solid var(--fold-border,#e7e8ea);border-radius:999px;padding:2px 8px;color:var(--fold-ink,#1c1d1f);font-size:12px;line-height:18px}
+.confirmPanel .caps .capMuted{border-color:var(--fold-border,#e7e8ea);color:var(--dsw-alias-label-secondary,#6b7280);font-size:12px;line-height:18px;padding:2px 8px}
+.confirmPanel .caps .capFact{flex-basis:100%;margin:2px 0 0;font-size:13px;line-height:20px;color:var(--fold-ink,#1c1d1f)}
+.confirmPanel .capCaveat{color:var(--dsw-alias-label-secondary,#6b7280);font-size:12px;line-height:18px}
+.installCaution{background:color-mix(in srgb, var(--dsw-alias-state-warn-primary, #b45309) 12%, transparent);border-radius:8px;padding:12px 13px}
 .installCautionLabel{margin:0 0 8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#6b7280)}
-.installCautionHead{display:flex;align-items:center;gap:6px;margin:0;font-size:13px;line-height:20px;font-weight:600;color:var(--dsw-alias-state-warn-primary,#b45309)}
+.installCautionHead{display:flex;align-items:center;gap:6px;margin:0;font-size:13px;line-height:20px;font-weight:600;color:var(--dsw-alias-label-primary,#1f2328)}
+.installCautionMark{display:block;flex:none}
 .installCautionBody{margin:6px 0 0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary,#1f2328)}
 .installCautionFoot{display:flex;align-items:baseline;gap:12px;margin:6px 0 0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary,#1f2328)}
 .installCautionLink{margin-left:auto;flex:none;white-space:nowrap;font-weight:600;font-size:13px;line-height:20px;color:var(--dsw-alias-link,#3b82f6);text-decoration:none}

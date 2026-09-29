@@ -805,6 +805,19 @@ describe('MarketSection (jsdom)', () => {
     expect(screen.queryByText('dsh plugin install dsh-tui')).toBeNull()
   })
 
+  it('copies the install command from its icon (#739)', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    stubTerminalPlugin()
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-tui')
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    fireEvent.click(await screen.findByText(en.cmdDetails))
+    fireEvent.click(screen.getByRole('button', { name: en.cmdCopy }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('dsh plugin install dsh-tui'))
+    expect(await screen.findByRole('status')).toHaveProperty('textContent', en.cmdCopied)
+  })
+
   it('offers the release a hold kept back, and installs it when asked (#635)', async () => {
     let installs = 0
     stubFetch({

@@ -23,6 +23,7 @@ import {
   IconChevronRightOutline14,
   IconChevronUpOutline14,
   IconCheckOutline16,
+  IconCopyOutline16,
   IconCordisPluginOutline14,
   IconDownloadOutline16,
   IconFolderOpen16,
@@ -1136,6 +1137,24 @@ function DownloadCount({ plugin, t }: { plugin: RegistryPlugin; t: Translate }) 
   )
 }
 
+/** Circle with a question mark, in the same dark badge and light glyph as the
+ * terminal mark below it. */
+function ConfirmCapabilityIcon() {
+  return (
+    <svg className={css.confirmTerminalIcon} viewBox="0 0 16 16" width={16} height={16} aria-hidden="true" focusable="false">
+      <circle cx="8" cy="8" r="8" fill="currentColor" />
+      <path
+        className={css.confirmTerminalPrompt}
+        d="M6.2 6.25a1.8 1.8 0 1 1 2.7 1.55C8.35 8.1 8 8.5 8 9.05"
+        fill="none"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <circle className={css.confirmTerminalDot} cx="8" cy="11.2" r="0.75" />
+    </svg>
+  )
+}
+
 /** Design-spec terminal mark for the install-command fold: dark rounded
  * square with a light `>_` prompt. Host ui-primitives has no matching glyph. */
 function ConfirmTerminalIcon() {
@@ -1150,6 +1169,72 @@ function ConfirmTerminalIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  )
+}
+
+/** Clipboard first; a hidden textarea covers hosts where writeText rejects. */
+function writeInstallCommand(text: string): Promise<void> {
+  const viaTextarea = () => {
+    const area = document.createElement('textarea')
+    area.value = text
+    area.setAttribute('readonly', '')
+    area.style.position = 'fixed'
+    area.style.top = '0'
+    area.style.left = '-9999px'
+    document.body.appendChild(area)
+    area.select()
+    const ok = document.execCommand('copy')
+    area.remove()
+    return ok ? Promise.resolve() : Promise.reject(new Error('copy failed'))
+  }
+  if (typeof navigator.clipboard?.writeText === 'function') {
+    return navigator.clipboard.writeText(text).catch(viaTextarea)
+  }
+  return viaTextarea()
+}
+
+/** Copy control for the install command. Success shows 「已复制」 beside the
+ * icon; the command stays selectable if both copy paths fail. */
+function ConfirmCopyButton({ text, label, copiedLabel }: { text: string, label: string, copiedLabel: string }) {
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (timer.current !== null) clearTimeout(timer.current)
+  }, [])
+  const markCopied = () => {
+    setCopied(true)
+    if (timer.current !== null) clearTimeout(timer.current)
+    timer.current = setTimeout(() => setCopied(false), 1500)
+  }
+  return (
+    <>
+      {copied && <span className={css.confirmCopied} role="status">{copiedLabel}</span>}
+      <button
+        type="button"
+        className={css.confirmCopy}
+        aria-label={copied ? copiedLabel : label}
+        onClick={() => {
+          void writeInstallCommand(text).then(markCopied, () => {})
+        }}
+      >
+        {copied ? <IconCheckOutline16 size={14} /> : <IconCopyOutline16 size={14} />}
+      </button>
+    </>
+  )
+}
+
+/** Design-spec warning mark: filled amber triangle, same visual size as the
+ * terminal badge above it. Title stays body ink. */
+function ConfirmWarnIcon() {
+  return (
+    <svg className={css.installCautionMark} viewBox="0 0 16 16" width={16} height={16} aria-hidden="true" focusable="false">
+      <path
+        fill="#f8b428"
+        d="M8 1.15Q8.72 1.15 9.15 2.05L14.4 12.35Q15.15 13.85 13.75 14.55H2.25Q0.85 13.85 1.6 12.35L6.85 2.05Q7.28 1.15 8 1.15Z"
+      />
+      <path d="M8 6.05v3.15" fill="none" stroke="#fff" strokeWidth="1.25" strokeLinecap="round" />
+      <circle cx="8" cy="11.15" r="0.68" fill="#fff" />
     </svg>
   )
 }
@@ -4291,7 +4376,7 @@ export function MarketSection(props: MarketSectionProps) {
           </p>
         ))}
         <ConfirmFold
-          icon={<IconQuestionOutline14 size={16} />}
+          icon={<ConfirmCapabilityIcon />}
           title={t('capabilityTitle')}
           open={capsOpen}
           onToggle={() => setCapsOpen(o => !o)}
@@ -6386,7 +6471,12 @@ export function MarketSection(props: MarketSectionProps) {
             open={cmdOpen}
             onToggle={() => setCmdOpen(o => !o)}
           >
-            <div className={css.cmd}>{confirming.install}</div>
+            <div className={css.confirmCmd}>
+              <div className={css.cmd}>{confirming.install}</div>
+              {confirming.install !== '' && (
+                <ConfirmCopyButton text={confirming.install} label={t('cmdCopy')} copiedLabel={t('cmdCopied')} />
+              )}
+            </div>
           </ConfirmFold>
           </div>
           {(looksTerminal(confirming, lang) || confirming.deprecated === true) && (
@@ -6395,7 +6485,7 @@ export function MarketSection(props: MarketSectionProps) {
               {looksTerminal(confirming, lang) && (
                 <>
                   <p className={css.installCautionHead}>
-                    <IconWarningOutline16 size={14} />
+                    <ConfirmWarnIcon />
                     {t('terminalCautionTitle')}
                   </p>
                   <p className={css.installCautionBody}>{t('terminalCautionBody')}</p>
