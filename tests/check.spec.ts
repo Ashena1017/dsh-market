@@ -1923,6 +1923,51 @@ describe('satisfiesRange', () => {
     expect(satisfiesRange('0.1.2-alpha.2', '^0.1.1-rc.2', { includePrerelease: true })).toBe(true)
   })
 
+  it('keeps the caret and tilde ceiling exclusive for prereleases of the ceiling itself', () => {
+    // npm expands a caret/tilde ceiling with `-0`: `^0.1.1-rc.2` is
+    // `>=0.1.1-rc.2 <0.2.0-0`, never `<0.2.0`. Comparing against the bare
+    // release made `0.2.0 > 0.2.0-rc.2` true — the release outranks the
+    // prerelease of its own base — so the 0.2 line slid under every `^0.1.x`
+    // range, which is what the whole 0.1 release train declares.
+    expect(satisfiesRange('0.2.0-rc.2', '^0.1.1-rc.2', { includePrerelease: true })).toBe(false)
+    expect(satisfiesRange('0.2.0-rc.1', '^0.1.1-rc.2', { includePrerelease: true })).toBe(false)
+    expect(satisfiesRange('0.2.0-0', '^0.1.1-rc.2', { includePrerelease: true })).toBe(false)
+    expect(satisfiesRange('0.2.0-rc.2', '^0.1.0-rc.7', { includePrerelease: true })).toBe(false)
+    expect(satisfiesRange('0.2.0-rc.2', '~0.1.7', { includePrerelease: true })).toBe(false)
+    // 1.x caret was already exclusive and stays so, for prereleases too.
+    expect(satisfiesRange('2.0.0-rc.1', '^1.2.0', { includePrerelease: true })).toBe(false)
+    // The ceiling itself is still excluded as a release.
+    expect(satisfiesRange('0.2.0', '^0.1.1-rc.2', { includePrerelease: true })).toBe(false)
+    // …and the declared line is still admitted.
+    expect(satisfiesRange('0.1.9', '^0.1.1-rc.2', { includePrerelease: true })).toBe(true)
+    expect(satisfiesRange('0.1.1-rc.2', '^0.1.1-rc.2', { includePrerelease: true })).toBe(true)
+  })
+
+  it('agrees with node-semver on the prerelease ranges the host gate judges', () => {
+    // The gate (@deepseek-ai/dsh-app-boot evaluatePluginCompatibility) is
+    // node-semver. Values here were read from node-semver 7.8.5, the copy the
+    // runtime ships, so this pins equivalence rather than intent — a
+    // divergence is what produced "the market said compatible, the install
+    // said rejected" for one release.
+    const oracle: [string, string, boolean | null][] = [
+      ['0.2.0-rc.2', '^0.1.1-rc.2', false],
+      ['0.2.0-rc.2', '^0.1.0-rc.7', false],
+      ['0.2.0-rc.2', '~0.1.7', false],
+      ['0.2.0-rc.2', '^0.1.1-rc.2 || ^0.2.0-rc.1', true],
+      ['0.1.2-alpha.2', '^0.1.1-rc.2', true],
+      ['0.1.2-alpha.2', '^0.0.1', false],
+      ['0.1.3', '~0.1.1', true],
+      ['0.2.1', '^0.1.1-rc.2', false],
+      ['0.2.0', '^0.1.1-rc.2', false],
+    ]
+    for (const [version, range, expected] of oracle) {
+      expect(
+        satisfiesRange(version, range, { includePrerelease: true }),
+        `${version} in ${range}`,
+      ).toBe(expected)
+    }
+  })
+
   it('matches wildcard, compound and || ranges; unknown ranges are null', () => {
     expect(satisfiesRange('1.2.3', '*')).toBe(true)
     expect(satisfiesRange('1.5.0', '>=1.2.0 <2.0.0')).toBe(true)

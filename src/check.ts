@@ -554,6 +554,27 @@ function semverStr(v: Semver): string {
 }
 
 /**
+ * The exclusive ceiling `^` / `~` compares against, in node-semver's own
+ * notation: `0.2.0` becomes `0.2.0-0`, never the bare release.
+ *
+ * `^0.1.1-rc.2` and `~0.1.7` both expand to a ceiling of `0.2.0`, and npm's
+ * ceiling is exclusive. Comparing against the bare release made the test
+ * `0.2.0 > 0.2.0-rc.2` true — the ceiling outranks the prerelease of its own
+ * base version — so `0.2.0-rc.2` slipped under every `^0.1.x` range. That is
+ * the host line every plugin on the 0.1 release train declares, judged by the
+ * 0.2 host it is being installed onto: the market answered "compatible" for
+ * releases the dsh gate (node-semver, `evaluatePluginCompatibility`) refuses.
+ *
+ * node-semver writes the ceiling as `<0.2.0-0`, which sorts below every
+ * prerelease of `0.2.0` and still excludes the release itself. `compatibility.
+ * ts` has always built its bounds this way (`nextBound`); this is the
+ * comparator catching up with it.
+ */
+function exclusiveUpperBound(release: string): string {
+  return `${release}-0`
+}
+
+/**
  * Minimal range matcher for the peer-range check: `*`, exact, ^, ~, >=, >,
  * <=, <, whitespace-separated pairs, and `||` alternatives. Anything else
  * returns null (unknown — reported, not asserted).
@@ -568,6 +589,11 @@ function semverStr(v: Semver): string {
  * Discovery can opt into npm's `includePrerelease` behaviour because every
  * published DSH host line is itself prerelease; diagnostics retain the npm
  * default unless a caller explicitly asks for that wider admission.
+ *
+ * `includePrerelease` widens ADMISSION only — which prereleases may be
+ * considered at all. It does not move a `^` / `~` ceiling, so a cross-minor
+ * host line stays outside a range that declared the previous minor, exactly
+ * as node-semver decides it (see {@link exclusiveUpperBound}).
  */
 export function satisfiesRange(
   version: string,
@@ -621,17 +647,16 @@ export function satisfiesRange(
         return compareSemver(version, target) < 0
       case '^': {
         // npm caret semantics: >= given, strictly < the next breaking bump.
-        const upper: Semver = major > 0
-          ? { major: major + 1, minor: 0, patch: 0, pre: [] }
+        const bound = major > 0
+          ? `${major + 1}.0.0`
           : minor > 0
-            ? { major: 0, minor: minor + 1, patch: 0, pre: [] }
-            : { major: 0, minor: 0, patch: patch + 1, pre: [] }
-        return gte(v, tv) && compareSemver(semverStr(upper), version) > 0
+            ? `0.${minor + 1}.0`
+            : `0.0.${patch + 1}`
+        return gte(v, tv) && compareSemver(exclusiveUpperBound(bound), version) > 0
       }
       case '~': {
         // npm tilde semantics: >= given, strictly < the next minor.
-        const upper: Semver = { major, minor: minor + 1, patch: 0, pre: [] }
-        return gte(v, tv) && compareSemver(semverStr(upper), version) > 0
+        return gte(v, tv) && compareSemver(exclusiveUpperBound(`${major}.${minor + 1}.0`), version) > 0
       }
       default:
         return null
