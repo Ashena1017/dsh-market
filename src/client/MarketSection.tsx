@@ -1434,6 +1434,13 @@ function sameInstalledMap(left: InstalledMap, right: InstalledMap): boolean {
 /** Same cap as `MAX_NOTE` in hot.ts; the server trims anything longer. */
 const NOTE_MAX = 200
 
+/**
+ * `/dsh-market/dismiss-broken` answers with the whole remaining map, but only
+ * `ok` is read: that map is a snapshot from when the request ran, and adopting
+ * it would resurrect or drop notices the panel has since settled (#763).
+ */
+type DismissBrokenReply = { ok?: unknown; brokenPlugins?: unknown; error?: unknown }
+
 /** `latest` is a semver for npm installs and a commit sha for github ones. */
 function displayLatest(latest: string): string {
   if (/^\d/.test(latest)) return 'v' + latest
@@ -2059,6 +2066,26 @@ export function MarketSection(props: MarketSectionProps) {
    */
   const [brokenPlugins, setBrokenPlugins] = useState<Record<string, { spec?: string; reason?: string }>>({})
   const brokenPluginNames = useMemo(() => Object.keys(brokenPlugins), [brokenPlugins])
+  const [dismissBrokenError, setDismissBrokenError] = useState<string | null>(null)
+  /**
+   * Per plugin, not one counter for the panel (#763 review).
+   *
+   * A shared generation made a second plugin's success swallow the first one's
+   * FAILURE, so a notice the server still had stayed hidden on screen with no
+   * error — the panel claimed a state the server did not have. Each name
+   * carries its own counter, so only a LATER click on the SAME plugin can
+   * supersede this one, and a different plugin's reply never can.
+   */
+  const dismissBrokenGen = useRef(new Map<string, number>())
+  /**
+   * Bumped by every authoritative `/installed` read. A dismiss whose reply
+   * arrives after one was overtaken by that read: the panel is already showing
+   * the server's truth, and rolling this failure back would put back a record
+   * the read has since settled.
+   */
+  const installedReadGen = useRef(0)
+  /** Rows with a dismiss in flight, so one row cannot queue two. */
+  const [dismissingBroken, setDismissingBroken] = useState<ReadonlySet<string>>(() => new Set())
   const [envFixing, setEnvFixing] = useState(false)
   const [envFailed, setEnvFailed] = useState(false)
   const [bootId, setBootId] = useState<string | null>(null)
@@ -2207,6 +2234,7 @@ export function MarketSection(props: MarketSectionProps) {
           ? body.diagnostics.findings.filter(isHostDependencyFinding)
           : []
         setBrokenPlugins(isRecordOfRecords(body.brokenPlugins) ? body.brokenPlugins : {})
+        installedReadGen.current += 1
         setHostDependencyFindings(findings)
       })
       .catch(() => {})
@@ -3579,6 +3607,107 @@ export function MarketSection(props: MarketSectionProps) {
         setUpdateExemptError(String(error))
       })
   }, [updateExemptSet, updateExemptNames, t])
+
+  /**
+   * Stop showing one removed-declaration notice (#763).
+   *
+   * The notice is durable on purpose — it is the only thing left that says why
+   * a plugin vanished — but the reporter's plugin was no longer in the catalog,
+   * so the search it offered found nothing and the banner outlived every other
+   * action. Hiding it says nothing about the plugin: the declaration stays
+   * dropped and the directory stays where it is.
+   *
+   * Every step touches THIS name and nothing else, in both directions:
+   *
+   * - success removes this key and ignores the reply's map. That map is a
+   *   snapshot from when the request ran, so adopting it wholesale would
+   *   resurrect a notice another click had already dismissed, and would drop a
+   *   record an `/installed` read reported while this was in flight — including
+   *   one written by a failed update (#663), which is the one thing the notice
+   *   exists for.
+   * - failure puts THIS key back, and only if no `/installed` read has landed
+   *   since: that read is the server's current truth and outranks a rollback
+   *   built from what the panel happened to be showing.
+   *
+   * A dismiss that silently did nothing is worse than having no button: the
+   * user would go on believing they had been told the truth about their profile.
+   */
+  const dismissBrokenPlugin = useCallback((name: string) => {
+    const record = brokenPlugins[name]
+    if (record === undefined) return
+    const gens = dismissBrokenGen.current
+    const gen = (gens.get(name) ?? 0) + 1
+    gens.set(name, gen)
+    const readAtRequest = installedReadGen.current
+    setDismissBrokenError(null)
+    setDismissingBroken(current => new Set(current).add(name))
+    // Optimistic; the failure path below puts this one key back.
+    setBrokenPlugins((current) => {
+      if (current[name] === undefined) return current
+      const next = { ...current }
+      delete next[name]
+      return next
+    })
+    /** This request's own failure, applied to this one name only. */
+    const restore = (reason: string) => {
+      // A later click on the same row owns this name now; that one reports its
+      // own outcome, and reporting this one too would be two answers to one
+      // question.
+      if (dismissBrokenGen.current.get(name) !== gen) return
+      // An `/installed` read landed meanwhile, so the panel is showing the
+      // server's current truth and this rollback — built from what the panel
+      // happened to be holding — would only argue with it. Skipping the record
+      // does NOT skip the message: the dismiss failed, the user is owed that.
+      if (installedReadGen.current === readAtRequest) {
+        setBrokenPlugins(current => (
+          current[name] === undefined ? { ...current, [name]: record } : current
+        ))
+      }
+      setDismissBrokenError(reason)
+    }
+    fetch(api('/dsh-market/dismiss-broken'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+      .then(async (res) => {
+        const text = await res.text()
+        let body: DismissBrokenReply | null = null
+        if (text !== '') {
+          try { body = JSON.parse(text) as DismissBrokenReply } catch { /* non-JSON */ }
+        }
+        return { status: res.status, body }
+      })
+      .then(({ status, body }) => {
+        if (status === 200 && body?.ok === true) {
+          // Said again, idempotently, and only for this name. The optimistic
+          // removal can have been undone by an `/installed` read that was
+          // already in flight when the click happened: it is a snapshot from
+          // before, so it still carries the notice, and it lands after. The
+          // server has now confirmed the record is gone, so the panel says so
+          // too — otherwise it would show a notice the server no longer has,
+          // with no error to explain it. Never the reply's whole map: that is
+          // older than anything the panel has learned since.
+          if (dismissBrokenGen.current.get(name) !== gen) return
+          setBrokenPlugins((current) => {
+            if (current[name] === undefined) return current
+            const next = { ...current }
+            delete next[name]
+            return next
+          })
+          return
+        }
+        restore(typeof body?.error === 'string' ? body.error : t('toggleFail'))
+      })
+      .catch((error: unknown) => { restore(String(error)) })
+      .finally(() => {
+        setDismissingBroken(current => {
+          const next = new Set(current)
+          next.delete(name)
+          return next
+        })
+      })
+  }, [brokenPlugins, t])
 
   const clearStaleFavorites = useCallback(() => {
     if (favoriteStale.length === 0) return
@@ -5366,8 +5495,29 @@ export function MarketSection(props: MarketSectionProps) {
                   size="sm"
                   onClick={() => { setCat('all'); setQ(name); setTab('discover') }}
                 >{t('brokenPluginAction')}</Button>
+                {/* A second, quieter way out (#763): the plugin may be gone from
+                    the catalog too, and then the search above finds nothing and
+                    the user has no way to make the banner stop. Ghost, because
+                    hiding a message is not one of the two things they may have
+                    come here to do. Disabled while in flight so one row cannot
+                    queue two requests against the same record. */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={dismissingBroken.has(name)}
+                  onClick={() => dismissBrokenPlugin(name)}
+                >{t('brokenPluginDismiss')}</Button>
               </div>
             ))}
+            {/* A dismiss that did not take says so here, next to the notice it
+                belongs to — and that notice is still on screen, because the
+                failure path put it back rather than leaving the user with an
+                error and no explanation. */}
+            {dismissBrokenError !== null && (
+              <div className={css.brokenPluginItem} role="alert">
+                <span className={css.brokenPluginText}>{dismissBrokenError}</span>
+              </div>
+            )}
           </div>
         )}
       </div>

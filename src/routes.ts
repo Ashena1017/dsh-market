@@ -3036,6 +3036,68 @@ export function mountMarketRoutes(
 
     host.webServer.register({
       kind: 'exact',
+      path: '/dsh-market/dismiss-broken',
+      handler: async (request, response) => {
+        if (request.method !== 'POST') {
+          response.writeHead(405, { allow: 'POST' })
+          response.end()
+          return
+        }
+        if (!sameOrigin(request)) {
+          sendJson(response, 403, { error: 'untrusted origin' })
+          return
+        }
+        try {
+          await withMutationQueued(async () => {
+            const body = (await readJsonBody(request)) as { name?: unknown } | null
+            const name = typeof body?.name === 'string' ? body.name.trim() : ''
+            if (name === '' || name.length > MAX_BLOCKED_NAME) {
+              sendJson(response, 400, { error: 'name is required / 需要 name' })
+              return
+            }
+            // The user's judgement that they no longer want to be told, not a
+            // claim about the plugin: the declaration stays dropped, the
+            // directory stays where it is, and nothing here is reinstalled.
+            // #763's reporter had no way to make this banner go away at all —
+            // the notice is durable by design (it is the only thing left that
+            // says why the plugin vanished, #663) and the one action it offered
+            // searches a catalog the plugin is no longer in.
+            //
+            // Re-read immediately before writing, so a concurrent install's
+            // `clearBrokenPlugin` cannot be undone by a stale snapshot (#414/#657).
+            const fresh = readMarketState(activeProfileDir)
+            const current = fresh.brokenPlugins ?? {}
+            // Nothing to remove: answer with what is there and stop. A second
+            // click on the same row, or a client whose view was already out of
+            // date, must not rewrite state.json or append a log line claiming
+            // the user hid a notice that was not there (#763 review).
+            if (current[name] === undefined) {
+              sendJson(response, 200, { ok: true, brokenPlugins: current })
+              return
+            }
+            const next = { ...current }
+            delete next[name]
+            const brokenPlugins = Object.keys(next).length > 0 ? next : undefined
+            // Explicitly present even when undefined: `writeMarketState` reads
+            // omission as "this caller has nothing to say" and would keep the
+            // entry on disk. Clearing the last one has to actually clear it.
+            writeMarketState(activeProfileDir, { ...fresh, brokenPlugins })
+            refreshMarketState()
+            // Says what happened, in the log the reporter already had to export
+            // to get an answer. Deliberately not "repaired" / "reinstalled":
+            // nothing here fixed anything, and the directory is still there.
+            logEvent('info', 'broken-notice-dismissed',
+              `${name}: the user hid the removed-declaration notice for it; the profile's declarations and the plugin's directory are untouched, so the next drop of the same failure will write a new record`)
+            sendJson(response, 200, { ok: true, brokenPlugins: next })
+          })
+        } catch (error) {
+          sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }),
+
+    host.webServer.register({
+      kind: 'exact',
       path: '/dsh-market/groups',
       handler: async (request, response) => {
         if (request.method !== 'POST') {
