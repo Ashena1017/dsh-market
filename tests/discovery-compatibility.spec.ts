@@ -64,6 +64,31 @@ describe('deriveHostCompatibility', () => {
     expect(result.requirement).toBe('^0.0.1')
   })
 
+  it('refuses a peer that declared the previous DSH release line (#756 shape)', () => {
+    // `^0.1.x` under a 0.2 host: the declared line is behind us, and dsh's own
+    // gate — node-semver over the same bounds — refuses the release. The
+    // leniency above must not stretch here, or one install produces two
+    // contradicting verdicts: compatible in the market, then "installation
+    // rejected" from the gate.
+    const result = deriveHostCompatibility(facts({
+      peerDependencies: { '@deepseek-ai/dsh-tools': '^0.1.1-rc.2' },
+    }), '0.2.0-rc.2', HOST_PACKAGES)
+    expect(result.status).toBe('incompatible')
+    expect(result.basis).toBe('manifest')
+    expect(result.requirement).toBe('^0.1.1-rc.2')
+  })
+
+  it('still admits a host on the declared line whose prerelease the gate cannot match', () => {
+    // The leniency the rule above carves out of: 0.1.2-alpha.2 is on the 0.1
+    // line the range named, and fails the range only because the comparator's
+    // prerelease sits on the 0.1.1 tuple. That mismatch says nothing about
+    // whether the plugin loads, so it stays compatible.
+    const result = deriveHostCompatibility(facts({
+      peerDependencies: { '@deepseek-ai/dsh-tools': '^0.1.1-rc.2' },
+    }), '0.1.2-alpha.2', HOST_PACKAGES)
+    expect(result.status).toBe('compatible')
+  })
+
   it('makes conflicting declarations incompatible and malformed-only matches unknown', () => {
     const conflicting = deriveHostCompatibility(facts({
       enginesDsh: '>=0.1.2-alpha.2',
