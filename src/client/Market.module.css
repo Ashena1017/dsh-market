@@ -133,6 +133,64 @@
    squeezed into a vertical stack instead of dropping to its own line. */
 .warnLine{color:var(--dsw-alias-state-warn-primary,#b45309);font-weight:600;font-size:12px;line-height:18px;margin:0;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 .modalNote{font-size:12px;color:var(--dsw-alias-label-tertiary,#8b93a1);line-height:18px;margin:12px 0 0;display:flex;align-items:center;gap:4px}
+/* Install confirm (#739). Card density is for a grid; this dialog is the
+   decision, so the blurb is body text and the signature, the blurb, and the
+   disclosures are separate bands. The card's own .desc / .byline stay put. */
+.confirmBody{display:flex;flex-direction:column;gap:12px}
+/* A step wider than the default Modal so the signature — owner, version,
+   downloads, stars, date — stays one line. Notes stay wider than this (#739). */
+.confirmModal{width:min(560px,92vw);max-width:min(560px,92vw);max-height:100%}
+/* The host frame already insets the card. Cap against that box, then scroll
+   the body so the title and the install buttons stay put. */
+.confirmContent{flex:1 1 auto;min-height:0;overflow:hidden}
+.confirmContent > :first-child{flex-shrink:0}
+/* The host body always starts 20px under the title. This dialog has no
+   description, so that band is empty; the same element is what scrolls once
+   the card hits the frame. */
+.confirmContent > :last-child{margin-top:0;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.confirmModal > :last-child{flex-shrink:0}
+.confirmBody .byline{margin-top:0;flex-wrap:nowrap}
+.confirmBody .owner{min-width:0}
+.confirmBody .shots{margin:0;padding:0}
+.confirmBody .modalNote{margin:0}
+.confirmTags{display:flex;flex-wrap:wrap;gap:6px}
+.confirmDesc{margin:0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary,#1f2328);white-space:pre-wrap}
+.confirmFold{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--dsw-alias-border-l2,#e5e7eb);padding-top:12px}
+/* Gray block, like the design's fold rows. layer-1 is white on this dialog,
+   which is why a bordered panel read as an empty frame (#739). */
+.confirmPanel{--fold-bg:#f7f8fa;--fold-border:#e7e8ea;--fold-ink:#1c1d1f;--fold-on-ink:#fff;background:var(--fold-bg);border:1px solid var(--fold-border);border-radius:8px}
+/* The hex above is the light-theme design spec; dark takes the host tokens so
+   the block does not become a light island on a dark dialog. */
+:global(body[data-ds-dark-theme]) .confirmPanel{--fold-bg:var(--dsw-alias-bg-layer-3,#353638);--fold-border:var(--dsw-alias-border-l2,#ffffff1f);--fold-ink:var(--dsw-alias-label-primary,#f9fafb);--fold-on-ink:var(--dsw-alias-bg-layer-2,#2c2c2e)}
+.confirmPanelRow{display:flex;align-items:center;gap:8px;width:100%;min-height:40px;padding:0 12px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.confirmPanelRow:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4176e6);outline-offset:-2px}
+.confirmPanelIcon{display:inline-flex;flex:none;color:var(--fold-ink)}
+.confirmTerminalIcon{display:block;flex:none;color:var(--fold-ink)}
+.confirmTerminalPrompt{stroke:var(--fold-on-ink);fill:none}
+.confirmTerminalDot{fill:var(--fold-on-ink)}
+.confirmPanelTitle{flex:1;min-width:0;font-size:13px;line-height:20px;color:var(--fold-ink)}
+.confirmPanelChevron{flex:none;color:var(--dsw-alias-label-tertiary,#8b93a1)}
+.confirmPanelBody{padding:0 12px 10px 16px}
+.confirmCmd{display:flex;align-items:center;gap:8px}
+.confirmPanel .cmd{flex:1;min-width:0;margin:0;padding:0;background:transparent;border-radius:0;line-height:24px}
+.confirmCopied{flex:none;font-size:12px;line-height:24px;color:var(--dsw-alias-state-success-primary,#22c55e);white-space:nowrap}
+.confirmCopy{display:inline-flex;flex:none;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--fold-ink,#1c1d1f);cursor:pointer}
+.confirmCopy:hover{background:color-mix(in srgb, var(--fold-ink, #1c1d1f) 8%, transparent)}
+.confirmCopy:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4176e6);outline-offset:1px}
+.confirmPanel .caps{gap:6px;padding:0}
+.confirmPanel .caps .capChip{background:var(--fold-on-ink,#fff);border:1px solid var(--fold-border,#e7e8ea);border-radius:999px;padding:2px 8px;color:var(--fold-ink,#1c1d1f);font-size:12px;line-height:18px}
+.confirmPanel .caps .capMuted{border-color:var(--fold-border,#e7e8ea);color:var(--dsw-alias-label-secondary,#6b7280);font-size:12px;line-height:18px;padding:2px 8px}
+.confirmPanel .caps .capFact{flex-basis:100%;margin:2px 0 0;font-size:13px;line-height:20px;color:var(--fold-ink,#1c1d1f)}
+.confirmPanel .capCaveat{color:var(--dsw-alias-label-secondary,#6b7280);font-size:12px;line-height:18px}
+.installCaution{background:color-mix(in srgb, var(--dsw-alias-state-warn-primary, #b45309) 12%, transparent);border-radius:8px;padding:12px 13px}
+.installCautionLabel{margin:0 0 8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#6b7280)}
+.installCautionHead{display:flex;align-items:center;gap:6px;margin:0;font-size:13px;line-height:20px;font-weight:600;color:var(--dsw-alias-label-primary,#1f2328)}
+.installCautionMark{display:block;flex:none}
+.installCautionBody{margin:6px 0 0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary,#1f2328)}
+.installCautionFoot{display:flex;align-items:baseline;gap:12px;margin:0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary,#1f2328)}
+.installCautionLink{margin-left:auto;flex:none;white-space:nowrap;font-weight:600;font-size:13px;line-height:20px;color:var(--dsw-alias-link,#3b82f6);text-decoration:none}
+.installCautionLink:hover{text-decoration:underline}
+.confirmFineprint{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#6b7280)}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:10px}
 /* Masonry: two independent columns, each packing its own cards tight.
    A CSS grid cannot do this — its rows are as tall as their tallest cell, so
@@ -609,7 +667,9 @@
 /* The honesty clause under the facts. It was a hover tooltip while this row sat
    on a card; it is body copy now, because the reader who opened this is the
    reader who needs it. */
-.capCaveat{color:var(--dsw-alias-label-tertiary,#8b93a1);font-size:11px;line-height:16px;margin:6px 0 0}
+.capCaveat{display:flex;align-items:baseline;gap:12px;color:var(--dsw-alias-label-tertiary,#8b93a1);font-size:11px;line-height:16px;margin:6px 0 0}
+.capCaveatNote{min-width:0}
+.capCaveatAt{margin-left:auto;flex:none;white-space:nowrap}
 .searchField{position:relative;min-width:0;box-sizing:border-box}
 /* The primitives' Input applies className to its padded OUTER span, not the
    native input, so the reserved space for the clear button belongs here and

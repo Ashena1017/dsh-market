@@ -11,6 +11,8 @@ import { resolve } from 'node:path'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarketSection, OwnerAvatar, resetMarketPortalHost, resetThemePreviewCache } from '../../src/client/MarketSection.tsx'
+import css from '../../src/client/Market.module.css'
+import { downloadStatsText } from '../../src/client/download-stats.ts'
 import { SEARCH_DELAY_MS } from '../../src/client/SearchInput.tsx'
 import {
   pluginScreenshotCandidates, resetGithubRouting, resetScreenshotsCache, setGithubRoutes,
@@ -703,6 +705,212 @@ describe('MarketSection (jsdom)', () => {
     expect(await screen.findByRole('button', { name: en.confirmInstall })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: en.cancel }))
     await waitFor(() => expect(screen.queryByRole('button', { name: en.confirmInstall })).toBeNull())
+  })
+
+  it('the install dialog reads the blurb as body text and keeps download methodology on the mark (#739)', async () => {
+    const plugin = {
+      name: 'dsh-loop', owner: 'alice', url: 'https://github.com/alice/dsh-loop',
+      category: ['tools'], npm: 'dsh-loop', stars: 50, added: '2026-08-01', version: '1.2.3',
+      downloads: 162500, downloadsStart: '2026-08-01', downloadsEnd: '2026-08-28', downloadsCheckedAt: '2026-08-28',
+      description: { en: 'Loop task runner', zh: '循环执行' }, install: 'dsh plugin install dsh-loop',
+    }
+    const tip = downloadStatsText(plugin, key => en[key])!
+    stubFetch({
+      '/dsh-market/registry': {
+        source: 'live',
+        hostVersion: '0.1.2-alpha.2',
+        registry: { ...REGISTRY, count: 1, plugins: [plugin] },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    // The card still uses the compact blurb. The methodology is not a paragraph.
+    expect(screen.getByText('Loop task runner').classList.contains(css.desc)).toBe(true)
+    expect(screen.queryByText(/Not lifetime downloads/)).toBeNull()
+    expect(screen.queryByText('2026-08-01')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    await screen.findByRole('button', { name: en.confirmInstall })
+
+    const blurbs = screen.getAllByText('Loop task runner')
+    expect(blurbs.some(el => el.classList.contains(css.desc))).toBe(true)
+    const dialogBlurb = blurbs.find(el => el.classList.contains(css.confirmDesc))
+    expect(dialogBlurb).toBeTruthy()
+    expect(dialogBlurb!.classList.contains(css.desc)).toBe(false)
+
+    const body = document.getElementsByClassName(css.confirmBody)[0] as HTMLElement
+    const byline = body.getElementsByClassName(css.byline)[0] as HTMLElement
+    expect(byline.textContent).toContain('alice')
+    expect(byline.textContent).toContain('v1.2.3')
+    expect(byline.textContent).toContain('162.5k')
+    expect(byline.textContent).toContain('2026-08-01')
+    expect(screen.getByTitle(en.published).textContent).toContain('2026-08-01')
+    expect(screen.queryByText(`${en.published} 2026-08-01`)).toBeNull()
+
+    expect(screen.queryByText(/Not lifetime downloads/)).toBeNull()
+    const marks = screen.getAllByLabelText(tip)
+    expect(marks.length).toBeGreaterThanOrEqual(1)
+    expect(marks.every(el => el.tabIndex === 0)).toBe(true)
+
+    expect(document.getElementsByClassName(css.confirmFold).length).toBe(1)
+    expect(body.getElementsByClassName(css.confirmPanel).length).toBe(2)
+    expect(screen.queryByText(en.installCaution)).toBeNull()
+    expect(screen.getAllByText('Tools').length).toBeGreaterThanOrEqual(1)
+  })
+
+  const stubTerminalPlugin = () => stubFetch({
+    '/dsh-market/registry': {
+      source: 'live',
+      hostVersion: '0.1.2-alpha.2',
+      registry: {
+        ...REGISTRY,
+        count: 1,
+        plugins: [{
+          name: 'dsh-tui', owner: 'alice', url: 'https://github.com/alice/dsh-tui',
+          category: 'tools', npm: null, stars: 1, added: '2026-08-01',
+          description: { en: 'A terminal UI', zh: '终端界面' }, install: 'dsh plugin install dsh-tui',
+        }],
+      },
+    },
+  })
+
+  it('shows Before you install for a terminal plugin, with the guide link beside the startup line (#739)', async () => {
+    stubTerminalPlugin()
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-tui')
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    expect(await screen.findByText(en.installCaution)).toBeTruthy()
+    expect(screen.getByText(en.terminalCautionTitle)).toBeTruthy()
+    const link = screen.getByRole('link', { name: en.terminalCautionLink })
+    expect(link.getAttribute('href')).toBe('https://github.com/alice/dsh-tui#readme')
+    const foot = link.closest(`.${css.installCautionFoot}`)
+    expect(foot).toBeTruthy()
+    expect(foot?.textContent).toContain(en.terminalCautionStartup)
+  })
+
+  it('still shows the startup line when only the description mentions a CLI (#739)', async () => {
+    stubFetch({
+      '/dsh-market/registry': {
+        source: 'live',
+        hostVersion: '0.1.2-alpha.2',
+        registry: {
+          ...REGISTRY,
+          count: 1,
+          plugins: [{
+            name: 'note-tool', owner: 'alice', url: 'https://github.com/alice/note-tool',
+            category: 'tools', npm: null, stars: 1, added: '2026-08-01',
+            description: { en: 'Supports a CLI flag', zh: '支持命令行参数' }, install: 'dsh plugin install note-tool',
+          }],
+        },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('note-tool')
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    expect(await screen.findByText(en.terminalCautionTitle)).toBeTruthy()
+    expect(screen.getByRole('link', { name: en.terminalCautionLink })).toBeTruthy()
+    expect(screen.getByText(en.terminalCautionStartup)).toBeTruthy()
+  })
+
+  it('opens the next install dialog with both folds collapsed (#739)', async () => {
+    stubTerminalPlugin()
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-tui')
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    fireEvent.click(await screen.findByText(en.capabilityTitle))
+    fireEvent.click(screen.getByText(en.cmdDetails))
+    expect(screen.getByText(en.capabilityNote)).toBeTruthy()
+    expect(screen.getByText('dsh plugin install dsh-tui')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: en.cancel }))
+
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    await screen.findByText(en.capabilityTitle)
+    expect(screen.queryByText(en.capabilityNote)).toBeNull()
+    expect(screen.queryByText('dsh plugin install dsh-tui')).toBeNull()
+  })
+
+  /** defineProperty is not covered by vi.unstubAllGlobals, so put the
+   * originals back or the next test inherits this clipboard. */
+  const stubCopy = (writeText: ReturnType<typeof vi.fn>, exec?: ReturnType<typeof vi.fn>) => {
+    const prevClip = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const prevExec = Object.getOwnPropertyDescriptor(document, 'execCommand')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    if (exec !== undefined) Object.defineProperty(document, 'execCommand', { configurable: true, writable: true, value: exec })
+    return () => {
+      if (prevClip !== undefined) Object.defineProperty(navigator, 'clipboard', prevClip)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+      if (exec !== undefined) {
+        if (prevExec !== undefined) Object.defineProperty(document, 'execCommand', prevExec)
+        else Reflect.deleteProperty(document, 'execCommand')
+      }
+    }
+  }
+
+  it('copies the install command from its icon (#739)', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const restore = stubCopy(writeText)
+    try {
+      stubTerminalPlugin()
+      render(<MarketSection {...props()} />)
+      await screen.findByText('dsh-tui')
+      fireEvent.click(screen.getByRole('button', { name: en.install }))
+      fireEvent.click(await screen.findByText(en.cmdDetails))
+      const copy = screen.getByRole('button', { name: en.cmdCopy })
+      fireEvent.click(copy)
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('dsh plugin install dsh-tui'))
+      expect(await screen.findByRole('status')).toHaveProperty('textContent', en.cmdCopied)
+      expect(document.activeElement).toBe(copy)
+    } finally {
+      restore()
+    }
+  })
+
+  it('falls back to execCommand inside the click when writeText rejects (#739)', async () => {
+    let copiedDuringClick = false
+    const writeText = vi.fn().mockImplementation(() => {
+      expect(copiedDuringClick).toBe(true)
+      return Promise.reject(new Error('denied'))
+    })
+    const exec = vi.fn(() => {
+      copiedDuringClick = true
+      return true
+    })
+    const restore = stubCopy(writeText, exec)
+    try {
+      stubTerminalPlugin()
+      render(<MarketSection {...props()} />)
+      await screen.findByText('dsh-tui')
+      fireEvent.click(screen.getByRole('button', { name: en.install }))
+      fireEvent.click(await screen.findByText(en.cmdDetails))
+      const copy = screen.getByRole('button', { name: en.cmdCopy })
+      fireEvent.click(copy)
+      expect(await screen.findByRole('status')).toHaveProperty('textContent', en.cmdCopied)
+      expect(exec).toHaveBeenCalledWith('copy')
+      expect(document.activeElement).toBe(copy)
+    } finally {
+      restore()
+    }
+  })
+
+  it('does not show copied when the clipboard and execCommand both fail (#739)', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+    const exec = vi.fn(() => false)
+    const restore = stubCopy(writeText, exec)
+    try {
+      stubTerminalPlugin()
+      render(<MarketSection {...props()} />)
+      await screen.findByText('dsh-tui')
+      fireEvent.click(screen.getByRole('button', { name: en.install }))
+      fireEvent.click(await screen.findByText(en.cmdDetails))
+      const copy = screen.getByRole('button', { name: en.cmdCopy })
+      fireEvent.click(copy)
+      await waitFor(() => expect(writeText).toHaveBeenCalled())
+      expect(screen.queryByRole('status')).toBeNull()
+      expect(exec).toHaveBeenCalledWith('copy')
+      expect(document.activeElement).toBe(copy)
+    } finally {
+      restore()
+    }
   })
 
   it('offers the release a hold kept back, and installs it when asked (#635)', async () => {
@@ -2712,6 +2920,10 @@ describe('#60 catalog deprecation', () => {
     fireEvent.click(within(oldCard).getByRole('button', { name: en.install }))
     expect(await screen.findByText('Install dsh-old?')).toBeTruthy()
     expect(screen.getAllByText(contains(en.deprecatedWarn)).length).toBeGreaterThan(0)
+    // Deprecated alone opens the caution block (#739); the terminal lines
+    // stay out because this plugin is not a terminal one.
+    expect(screen.getByText(en.installCaution)).toBeTruthy()
+    expect(screen.queryByText(en.terminalCautionTitle)).toBeNull()
     // The card behind the modal and the modal itself both carry the link.
     expect(screen.getAllByText(en.replacementHint + ' dsh-new').length).toBeGreaterThan(0)
     fireEvent.click(screen.getByRole('button', { name: en.cancel }))
@@ -4076,8 +4288,10 @@ describe('capability disclosure (#401)', () => {
     expect(dialog.getByText(en.capShell)).toBeTruthy()
     expect(dialog.getByText(en.capFsWrite)).toBeTruthy()
     expect(dialog.getByText(en.capRedCredentialsNetwork)).toBeTruthy()
-    expect(dialog.getByText(en.capabilityNote)).toBeTruthy()
-    expect(dialog.getByText(en.capabilityScannedAt.replace('{0}', '2026-09-24'))).toBeTruthy()
+    const caveat = dialog.getByText((_, node) => node?.tagName === 'P'
+      && (node.textContent ?? '').includes(en.capabilityNote)
+      && (node.textContent ?? '').includes(en.capabilityScannedAt.replace('{0}', '2026-09-24')))
+    expect(caveat.getElementsByClassName(css.capCaveatAt)[0]?.textContent).toBe(en.capabilityScannedAt.replace('{0}', '2026-09-24'))
     // Disclosure, never verdict.
     expect(dialog.queryByText(/^safe$/i)).toBeNull()
   })
@@ -5210,10 +5424,14 @@ describe('card thumbnail + lightbox (curated screenshots only)', () => {
     while (card !== null && within(card).queryAllByRole('button', { name: en.install }).length === 0) card = card.parentElement
     fireEvent.click(within(card!).getAllByRole('button', { name: en.install })[0]!)
     await screen.findByRole('button', { name: en.confirmInstall })
+    // The dialog carries the methodology on its own download mark, not as a
+    // second paragraph in the body (#739).
     const dialog = within(screen.getByRole('dialog'))
-    expect(dialog.getByText(/npm rolling 30-day downloads: 4200/).textContent?.toLowerCase())
-      .toContain('not lifetime downloads or unique users')
-    expect(dialog.getByText(/Source checked at: 2026-09-24/)).toBeTruthy()
+    const dialogCount = dialog.getByLabelText(/npm rolling 30-day downloads: 4200/)
+    expect(dialogCount.getAttribute('tabindex')).toBe('0')
+    expect(dialogCount.getAttribute('aria-label')?.toLowerCase()).toContain('not lifetime downloads or unique users')
+    expect(dialogCount.getAttribute('aria-label')).toContain('2026-09-24')
+    expect(dialog.queryByText(/Source checked at: 2026-09-24/)).toBeNull()
   })
 
   it('shows a scrollable thumbnail strip only on the card with curated screenshots', async () => {

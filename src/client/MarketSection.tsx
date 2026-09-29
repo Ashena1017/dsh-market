@@ -23,7 +23,7 @@ import {
   IconChevronRightOutline14,
   IconChevronUpOutline14,
   IconCheckOutline16,
-  IconCodeOutline16,
+  IconCopyOutline16,
   IconCordisPluginOutline14,
   IconDownloadOutline16,
   IconFolderOpen16,
@@ -1137,6 +1137,151 @@ function DownloadCount({ plugin, t }: { plugin: RegistryPlugin; t: Translate }) 
   )
 }
 
+/** Circle with a question mark, in the same dark badge and light glyph as the
+ * terminal mark below it. */
+function ConfirmCapabilityIcon() {
+  return (
+    <svg className={css.confirmTerminalIcon} viewBox="0 0 16 16" width={16} height={16} aria-hidden="true" focusable="false">
+      <circle cx="8" cy="8" r="8" fill="currentColor" />
+      <path
+        className={css.confirmTerminalPrompt}
+        d="M6.2 6.25a1.8 1.8 0 1 1 2.7 1.55C8.35 8.1 8 8.5 8 9.05"
+        fill="none"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <circle className={css.confirmTerminalDot} cx="8" cy="11.2" r="0.75" />
+    </svg>
+  )
+}
+
+/** Design-spec terminal mark for the install-command fold: dark rounded
+ * square with a light `>_` prompt. Host ui-primitives has no matching glyph. */
+function ConfirmTerminalIcon() {
+  return (
+    <svg className={css.confirmTerminalIcon} viewBox="0 0 16 16" width={16} height={16} aria-hidden="true" focusable="false">
+      <rect width="16" height="16" rx="3.5" fill="currentColor" />
+      <path
+        className={css.confirmTerminalPrompt}
+        d="M4.25 5.25 L7.25 8 L4.25 10.75 M8.25 10.75 H12"
+        fill="none"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+/** execCommand only succeeds inside the click. writeText rejects later, after
+ * Chrome has already dropped the user activation, so the textarea copy has
+ * to happen before that promise. The field stays inside the dialog; removing
+ * a focused node outside it would drop the keyboard onto document.body. */
+function copyInstallCommandNow(text: string, anchor: HTMLElement): boolean {
+  const area = document.createElement('textarea')
+  area.value = text
+  area.setAttribute('readonly', '')
+  area.setAttribute('aria-hidden', 'true')
+  area.tabIndex = -1
+  area.style.position = 'fixed'
+  area.style.top = '0'
+  area.style.left = '-9999px'
+  ;(anchor.parentElement ?? document.body).appendChild(area)
+  area.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  area.remove()
+  anchor.focus()
+  return ok
+}
+
+function writeInstallCommand(text: string, anchor: HTMLElement): Promise<void> {
+  const copiedNow = copyInstallCommandNow(text, anchor)
+  const write = navigator.clipboard?.writeText
+  if (typeof write !== 'function') {
+    return copiedNow ? Promise.resolve() : Promise.reject(new Error('copy failed'))
+  }
+  return write.call(navigator.clipboard, text).then(
+    () => undefined,
+    () => {
+      if (copiedNow) return
+      throw new Error('copy failed')
+    },
+  )
+}
+
+/** Copy control for the install command. Success shows 「已复制」 beside the
+ * icon; the command stays selectable if both copy paths fail. */
+function ConfirmCopyButton({ text, label, copiedLabel }: { text: string, label: string, copiedLabel: string }) {
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (timer.current !== null) clearTimeout(timer.current)
+  }, [])
+  const markCopied = () => {
+    setCopied(true)
+    if (timer.current !== null) clearTimeout(timer.current)
+    timer.current = setTimeout(() => setCopied(false), 1500)
+  }
+  return (
+    <>
+      {copied && <span className={css.confirmCopied} role="status">{copiedLabel}</span>}
+      <button
+        type="button"
+        className={css.confirmCopy}
+        aria-label={copied ? copiedLabel : label}
+        onClick={(event) => {
+          void writeInstallCommand(text, event.currentTarget).then(markCopied, () => {})
+        }}
+      >
+        {copied ? <IconCheckOutline16 size={14} /> : <IconCopyOutline16 size={14} />}
+      </button>
+    </>
+  )
+}
+
+/** Design-spec warning mark: filled amber triangle, same visual size as the
+ * terminal badge above it. Title stays body ink. */
+function ConfirmWarnIcon() {
+  return (
+    <svg className={css.installCautionMark} viewBox="0 0 16 16" width={16} height={16} aria-hidden="true" focusable="false">
+      <path
+        fill="#f8b428"
+        d="M8 1.15Q8.72 1.15 9.15 2.05L14.4 12.35Q15.15 13.85 13.75 14.55H2.25Q0.85 13.85 1.6 12.35L6.85 2.05Q7.28 1.15 8 1.15Z"
+      />
+      <path d="M8 6.05v3.15" fill="none" stroke="#fff" strokeWidth="1.25" strokeLinecap="round" />
+      <circle cx="8" cy="11.15" r="0.68" fill="#fff" />
+    </svg>
+  )
+}
+
+/** Install-dialog fold (#739). A gray block, not an outlined frame: the icon
+ * stays on the left and the chevron stays on the right, open or closed. */
+function ConfirmFold({ icon, title, open, onToggle, children }: {
+  icon: ReactNode
+  title: string
+  open: boolean
+  onToggle: () => void
+  children: ReactNode
+}) {
+  return (
+    <div className={css.confirmPanel}>
+      <button type="button" className={css.confirmPanelRow} aria-expanded={open} onClick={onToggle}>
+        <span className={css.confirmPanelIcon}>{icon}</span>
+        <span className={css.confirmPanelTitle}>{title}</span>
+        {open
+          ? <IconChevronUpOutline14 size={14} className={css.confirmPanelChevron} />
+          : <IconChevronRightOutline14 size={14} className={css.confirmPanelChevron} />}
+      </button>
+      {open && <div className={css.confirmPanelBody}>{children}</div>}
+    </div>
+  )
+}
+
 /** Catalog npm latest, omitted for github-only and not-yet-backfilled rows. */
 function CatalogVersionMark({ version, tip }: { version: string | null | undefined; tip: string }) {
   if (typeof version !== 'string' || version.length === 0) return null
@@ -1885,6 +2030,12 @@ export function MarketSection(props: MarketSectionProps) {
   /** Install-command disclosure inside the confirm dialog. */
   const [cmdOpen, setCmdOpen] = useState(false)
   const [capsOpen, setCapsOpen] = useState(false)
+  // Both folds belong to one dialog opening; the next plugin starts collapsed
+  // no matter which path closed the previous one (cancel, Esc, install).
+  useEffect(() => {
+    setCapsOpen(false)
+    setCmdOpen(false)
+  }, [confirming])
   /** Per-row "why is it not live" disclosure (installed tab). */
   const [whyOpen, setWhyOpen] = useState<string | null>(null)
   /** Restore-confirm dialog (replaces window.confirm). */
@@ -4244,12 +4395,10 @@ export function MarketSection(props: MarketSectionProps) {
             {' ' + redLineLabel(line)}
           </p>
         ))}
-        <DisclosureRow
-          icon={<IconQuestionOutline14 size={16} />}
+        <ConfirmFold
+          icon={<ConfirmCapabilityIcon />}
           title={t('capabilityTitle')}
           open={capsOpen}
-          expandable
-          expandOnRowClick
           onToggle={() => setCapsOpen(o => !o)}
         >
           <div className={css.caps}>
@@ -4265,11 +4414,13 @@ export function MarketSection(props: MarketSectionProps) {
               <span key={line} className={css.capFact}>{redLineLabel(line)}</span>
             ))}
           </div>
-          <p className={css.capCaveat}>{t('capabilityNote')}</p>
-          {typeof p.capabilityCheckedAt === 'string' && p.capabilityCheckedAt.length > 0 && (
-            <p className={css.capCaveat}>{t('capabilityScannedAt').replace('{0}', p.capabilityCheckedAt.slice(0, 10))}</p>
-          )}
-        </DisclosureRow>
+          <p className={css.capCaveat}>
+            <span className={css.capCaveatNote}>{t('capabilityNote')}</span>
+            {typeof p.capabilityCheckedAt === 'string' && p.capabilityCheckedAt.length > 0 && (
+              <span className={css.capCaveatAt}>{t('capabilityScannedAt').replace('{0}', p.capabilityCheckedAt.slice(0, 10))}</span>
+            )}
+          </p>
+        </ConfirmFold>
       </>
     )
   }
@@ -6280,11 +6431,13 @@ export function MarketSection(props: MarketSectionProps) {
       {confirming !== null && (
         <Modal
           open
-          onClose={() => { setConfirming(null); setCmdOpen(false) }}
+          className={css.confirmModal}
+          contentClassName={css.confirmContent}
+          onClose={() => setConfirming(null)}
           title={t('confirmTitle') + ' ' + confirming.name + '?'}
           footer={(
             <>
-              <Button variant="ghost" onClick={() => { setConfirming(null); setCmdOpen(false) }}>{t('cancel')}</Button>
+              <Button variant="ghost" onClick={() => setConfirming(null)}>{t('cancel')}</Button>
               <Button variant="primary" onClick={() => doInstall(confirming)}>{t('confirmInstall')}</Button>
             </>
           )}
@@ -6292,70 +6445,96 @@ export function MarketSection(props: MarketSectionProps) {
           {/* The detail dialog has to show at LEAST what the card already
               does — owner, version, downloads, stars, published date, category —
               a "detail" view that shows less than the summary it opened from
-              is backwards. */}
+              is backwards. The rolling-window explanation stays on the
+              download mark (hover, focus, aria-label): repeating it as the
+              first paragraph made the methodology louder than the blurb (#739). */}
+          <div className={css.confirmBody}>
           <div className={css.byline}>
             <OwnerAvatar name={confirming.name} owner={confirming.owner || ''} />
             <span className={css.owner} title={confirming.owner}>{confirming.owner}</span>
             <CatalogVersionMark version={confirming.version} tip={catalogVersionTip} />
             <DownloadCount plugin={confirming} t={t} />
             {typeof confirming.stars === 'number' && (
-              <Tooltip label={String(confirming.stars)} side="top">
-                <span className={css.star}>{'· ★ ' + formatCount(confirming.stars)}</span>
-              </Tooltip>
+              <span className={css.star}>{'· ★ ' + formatCount(confirming.stars)}</span>
             )}
-            <span className={css.grow} />
-            {pluginCategories(confirming).map(category => (
-              <span key={category} className={css.tag}>
-                {(data!.categories[category] && (data!.categories[category]![lang] || data!.categories[category]!.en)) || category}
-              </span>
-            ))}
+            {confirming.added && (
+              <span className={css.star} title={t('published')}>{`· ${confirming.added}`}</span>
+            )}
           </div>
-          {confirming.added && <div className={css.metaInline}>{t('published') + ' ' + confirming.added}</div>}
-          {downloadStatsText(confirming, t) !== null && (
-            <div className={css.metaInline}>{downloadStatsText(confirming, t)}</div>
+          {pluginCategories(confirming).length > 0 && (
+            <div className={css.confirmTags}>
+              {pluginCategories(confirming).map(category => (
+                <span key={category} className={css.tag}>
+                  {(data!.categories[category] && (data!.categories[category]![lang] || data!.categories[category]!.en)) || category}
+                </span>
+              ))}
+            </div>
           )}
           {/* The Modal primitive's own `description` prop is sized for a
               one-line subtitle under the title — a full plugin description
               rendered there read as an oversized heading, not body text
-              (reported on a real host). Rendering it here, at the card's own
-              size, also matches the card's own reading order: name, byline,
-              description, then screenshots. */}
-          <CardDesc text={(confirming.description && (confirming.description[lang] || confirming.description.en)) || ''} t={t} />
+              (reported on a real host). The card's .desc is tertiary and
+              clamped so a grid stays even; here the blurb is what the dialog
+              is for, so it takes body color and body size (#739). */}
+          {(() => {
+            const text = (confirming.description && (confirming.description[lang] || confirming.description.en)) || ''
+            return text === '' ? null : <p className={css.confirmDesc}>{text}</p>
+          })()}
           <ScreenshotStrip plugin={confirming} onOpen={openLightbox} />
+          {/* A rule between "what it is" and the disclosures. Without it the
+              fold rows sat in the same block as the blurb (#739). */}
+          <div className={css.confirmFold}>
           {capabilityDetail(confirming)}
-          <DisclosureRow
-            icon={<IconCodeOutline16 size={16} />}
+          <ConfirmFold
+            icon={<ConfirmTerminalIcon />}
             title={t('cmdDetails')}
             open={cmdOpen}
-            expandable
-            expandOnRowClick
             onToggle={() => setCmdOpen(o => !o)}
           >
-            <div className={css.cmd}>{confirming.install}</div>
-          </DisclosureRow>
-          {looksTerminal(confirming, lang) && (
-            <p className={css.warnLine}>
-              <IconWarningOutline16 size={14} className={css.bannerIcon} />
-              {' ' + t('terminalWarn') + ' '}
-              <a className={css.src} href={confirming.url + '#readme'} target="_blank" rel="noreferrer">{t('readme')}</a>
-            </p>
+            <div className={css.confirmCmd}>
+              <div className={css.cmd}>{confirming.install}</div>
+              {typeof confirming.install === 'string' && confirming.install !== '' && (
+                <ConfirmCopyButton text={confirming.install} label={t('cmdCopy')} copiedLabel={t('cmdCopied')} />
+              )}
+            </div>
+          </ConfirmFold>
+          </div>
+          {(looksTerminal(confirming, lang) || confirming.deprecated === true) && (
+            <div className={css.installCaution}>
+              <p className={css.installCautionLabel}>{t('installCaution')}</p>
+              {looksTerminal(confirming, lang) && (
+                <>
+                  <p className={css.installCautionHead}>
+                    <ConfirmWarnIcon />
+                    {t('terminalCautionTitle')}
+                  </p>
+                  <p className={css.installCautionBody}>{t('terminalCautionBody')}</p>
+                  <p className={css.installCautionFoot}>
+                    <span>{t('terminalCautionStartup')}</span>
+                    <a className={css.installCautionLink} href={confirming.url + '#readme'} target="_blank" rel="noreferrer">{t('terminalCautionLink')}</a>
+                  </p>
+                </>
+              )}
+              {confirming.deprecated === true && (() => {
+                const replacement = replacementOf(confirming)
+                return (
+                  <p className={css.installCautionBody}>
+                    {t('deprecatedWarn')}
+                    {replacement !== undefined && (
+                      <>
+                        {' '}
+                        <a className={css.src} href={replacement.url} target="_blank" rel="noreferrer">
+                          {t('replacementHint') + ' ' + replacement.name}
+                        </a>
+                      </>
+                    )}
+                  </p>
+                )
+              })()}
+            </div>
           )}
-          {confirming.deprecated === true && (() => {
-            const replacement = replacementOf(confirming)
-            return (
-              <div className={css.deprecate}>
-                <div className={css.depLine}>
-                  <span>⚠️ {t('deprecatedWarn')}</span>
-                  {replacement !== undefined && (
-                    <a className={css.src} href={replacement.url} target="_blank" rel="noreferrer">
-                      {t('replacementHint') + ' ' + replacement.name}
-                    </a>
-                  )}
-                </div>
-              </div>
-            )
-          })()}
-          <p className={css.modalNote}><IconWarningOutline16 size={14} className={css.bannerIcon} />{' ' + t('confirmWarn')}</p>
+          <p className={css.confirmFineprint}>{t('confirmWarn')}</p>
+          </div>
         </Modal>
       )}
       {recovery !== null && (
