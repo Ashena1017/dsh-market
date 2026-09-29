@@ -758,22 +758,24 @@ describe('MarketSection (jsdom)', () => {
     expect(screen.getAllByText('Tools').length).toBeGreaterThanOrEqual(1)
   })
 
-  it('shows Before you install only when the plugin is a terminal one (#739)', async () => {
-    stubFetch({
-      '/dsh-market/registry': {
-        source: 'live',
-        hostVersion: '0.1.2-alpha.2',
-        registry: {
-          ...REGISTRY,
-          count: 1,
-          plugins: [{
-            name: 'dsh-tui', owner: 'alice', url: 'https://github.com/alice/dsh-tui',
-            category: 'tools', npm: null, stars: 1, added: '2026-08-01',
-            description: { en: 'A terminal UI', zh: '终端界面' }, install: 'dsh plugin install dsh-tui',
-          }],
-        },
+  const stubTerminalPlugin = () => stubFetch({
+    '/dsh-market/registry': {
+      source: 'live',
+      hostVersion: '0.1.2-alpha.2',
+      registry: {
+        ...REGISTRY,
+        count: 1,
+        plugins: [{
+          name: 'dsh-tui', owner: 'alice', url: 'https://github.com/alice/dsh-tui',
+          category: 'tools', npm: null, stars: 1, added: '2026-08-01',
+          description: { en: 'A terminal UI', zh: '终端界面' }, install: 'dsh plugin install dsh-tui',
+        }],
       },
-    })
+    },
+  })
+
+  it('shows Before you install for a terminal plugin, with the guide link beside the startup line (#739)', async () => {
+    stubTerminalPlugin()
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-tui')
     fireEvent.click(screen.getByRole('button', { name: en.install }))
@@ -784,6 +786,23 @@ describe('MarketSection (jsdom)', () => {
     const foot = link.closest(`.${css.installCautionFoot}`)
     expect(foot).toBeTruthy()
     expect(foot?.textContent).toContain(en.terminalCautionStartup)
+  })
+
+  it('opens the next install dialog with both folds collapsed (#739)', async () => {
+    stubTerminalPlugin()
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-tui')
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    fireEvent.click(await screen.findByText(en.capabilityTitle))
+    fireEvent.click(screen.getByText(en.cmdDetails))
+    expect(screen.getByText(en.capabilityNote)).toBeTruthy()
+    expect(screen.getByText('dsh plugin install dsh-tui')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: en.cancel }))
+
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    await screen.findByText(en.capabilityTitle)
+    expect(screen.queryByText(en.capabilityNote)).toBeNull()
+    expect(screen.queryByText('dsh plugin install dsh-tui')).toBeNull()
   })
 
   it('offers the release a hold kept back, and installs it when asked (#635)', async () => {
@@ -2793,6 +2812,10 @@ describe('#60 catalog deprecation', () => {
     fireEvent.click(within(oldCard).getByRole('button', { name: en.install }))
     expect(await screen.findByText('Install dsh-old?')).toBeTruthy()
     expect(screen.getAllByText(contains(en.deprecatedWarn)).length).toBeGreaterThan(0)
+    // Deprecated alone opens the caution block (#739); the terminal lines
+    // stay out because this plugin is not a terminal one.
+    expect(screen.getByText(en.installCaution)).toBeTruthy()
+    expect(screen.queryByText(en.terminalCautionTitle)).toBeNull()
     // The card behind the modal and the modal itself both carry the link.
     expect(screen.getAllByText(en.replacementHint + ' dsh-new').length).toBeGreaterThan(0)
     fireEvent.click(screen.getByRole('button', { name: en.cancel }))
@@ -5293,10 +5316,14 @@ describe('card thumbnail + lightbox (curated screenshots only)', () => {
     while (card !== null && within(card).queryAllByRole('button', { name: en.install }).length === 0) card = card.parentElement
     fireEvent.click(within(card!).getAllByRole('button', { name: en.install })[0]!)
     await screen.findByRole('button', { name: en.confirmInstall })
+    // The dialog carries the methodology on its own download mark, not as a
+    // second paragraph in the body (#739).
     const dialog = within(screen.getByRole('dialog'))
-    expect(dialog.getByText(/npm rolling 30-day downloads: 4200/).textContent?.toLowerCase())
-      .toContain('not lifetime downloads or unique users')
-    expect(dialog.getByText(/Source checked at: 2026-09-24/)).toBeTruthy()
+    const dialogCount = dialog.getByLabelText(/npm rolling 30-day downloads: 4200/)
+    expect(dialogCount.getAttribute('tabindex')).toBe('0')
+    expect(dialogCount.getAttribute('aria-label')?.toLowerCase()).toContain('not lifetime downloads or unique users')
+    expect(dialogCount.getAttribute('aria-label')).toContain('2026-09-24')
+    expect(dialog.queryByText(/Source checked at: 2026-09-24/)).toBeNull()
   })
 
   it('shows a scrollable thumbnail strip only on the card with curated screenshots', async () => {

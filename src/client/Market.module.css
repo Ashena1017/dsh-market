@@ -153,11 +153,16 @@
 .confirmFold{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--dsw-alias-border-l2,#e5e7eb);padding-top:12px}
 /* Gray block, like the design's fold rows. layer-1 is white on this dialog,
    which is why a bordered panel read as an empty frame (#739). */
-.confirmPanel{background:#f7f8fa;border:1px solid #e7e8ea;border-radius:8px}
-.confirmPanelRow{display:flex;align-items:center;gap:8px;width:100%;min-height:40px;padding:0 12px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
-.confirmPanelIcon{display:inline-flex;flex:none;color:#1c1d1f}
-.confirmTerminalIcon{display:block;flex:none;color:#1c1d1f}
-.confirmPanelTitle{flex:1;min-width:0;font-size:13px;line-height:20px;color:#1c1d1f}
+.confirmPanel{--fold-bg:#f7f8fa;--fold-border:#e7e8ea;--fold-ink:#1c1d1f;--fold-on-ink:#fff;background:var(--fold-bg);border:1px solid var(--fold-border);border-radius:8px}
+/* The hex above is the light-theme design spec; dark takes the host tokens so
+   the block does not become a light island on a dark dialog. */
+:global(body[data-ds-dark-theme]) .confirmPanel{--fold-bg:var(--dsw-alias-bg-layer-3,#353638);--fold-border:var(--dsw-alias-border-l2,#ffffff1f);--fold-ink:var(--dsw-alias-label-primary,#f9fafb);--fold-on-ink:var(--dsw-alias-bg-layer-2,#2c2c2e)}
+.confirmPanelRow{display:flex;align-items:center;gap:8px;width:100%;min-height:40px;padding:0 12px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.confirmPanelRow:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4176e6);outline-offset:-2px}
+.confirmPanelIcon{display:inline-flex;flex:none;color:var(--fold-ink)}
+.confirmTerminalIcon{display:block;flex:none;color:var(--fold-ink)}
+.confirmTerminalPrompt{stroke:var(--fold-on-ink)}
+.confirmPanelTitle{flex:1;min-width:0;font-size:13px;line-height:20px;color:var(--fold-ink)}
 .confirmPanelChevron{flex:none;color:var(--dsw-alias-label-tertiary,#8b93a1)}
 .confirmPanelBody{padding:0 12px 10px 16px}
 .confirmPanel .cmd{margin:0;padding:0;background:transparent;border-radius:0}

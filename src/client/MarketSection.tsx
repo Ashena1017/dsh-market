@@ -1143,9 +1143,9 @@ function ConfirmTerminalIcon() {
     <svg className={css.confirmTerminalIcon} viewBox="0 0 16 16" width={16} height={16} aria-hidden="true" focusable="false">
       <rect width="16" height="16" rx="3.5" fill="currentColor" />
       <path
+        className={css.confirmTerminalPrompt}
         d="M4.25 5.25 L7.25 8 L4.25 10.75 M8.25 10.75 H12"
         fill="none"
-        stroke="#fff"
         strokeWidth="1.4"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -1925,6 +1925,12 @@ export function MarketSection(props: MarketSectionProps) {
   /** Install-command disclosure inside the confirm dialog. */
   const [cmdOpen, setCmdOpen] = useState(false)
   const [capsOpen, setCapsOpen] = useState(false)
+  // Both folds belong to one dialog opening; the next plugin starts collapsed
+  // no matter which path closed the previous one (cancel, Esc, install).
+  useEffect(() => {
+    setCapsOpen(false)
+    setCmdOpen(false)
+  }, [confirming])
   /** Per-row "why is it not live" disclosure (installed tab). */
   const [whyOpen, setWhyOpen] = useState<string | null>(null)
   /** Restore-confirm dialog (replaces window.confirm). */
@@ -6322,11 +6328,11 @@ export function MarketSection(props: MarketSectionProps) {
           open
           className={css.confirmModal}
           contentClassName={css.confirmContent}
-          onClose={() => { setConfirming(null); setCmdOpen(false) }}
+          onClose={() => setConfirming(null)}
           title={t('confirmTitle') + ' ' + confirming.name + '?'}
           footer={(
             <>
-              <Button variant="ghost" onClick={() => { setConfirming(null); setCmdOpen(false) }}>{t('cancel')}</Button>
+              <Button variant="ghost" onClick={() => setConfirming(null)}>{t('cancel')}</Button>
               <Button variant="primary" onClick={() => doInstall(confirming)}>{t('confirmInstall')}</Button>
             </>
           )}
