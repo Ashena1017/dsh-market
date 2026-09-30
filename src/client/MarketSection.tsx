@@ -5616,6 +5616,14 @@ export function MarketSection(props: MarketSectionProps) {
         onScroll={e => {
           const show = e.currentTarget.scrollTop > 400
           setShowTop(prev => (prev === show ? prev : show))
+          // Card menus are portaled to document.body and re-pinned to their
+          // trigger on every scroll, so nothing here clips them: a trigger
+          // scrolled under the sticky header or out of the list drags its
+          // menu out over the header and past the panel edge.
+          setPluginMenuUrl(null)
+          setInstalledMenuName(null)
+          setGroupMenuFor(null)
+          setAssignFor(null)
         }}
       >
         {tab === 'backup'
