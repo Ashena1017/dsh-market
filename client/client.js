@@ -11740,10 +11740,6 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 						onScroll: (e) => {
 							const show = e.currentTarget.scrollTop > 400;
 							setShowTop((prev) => prev === show ? prev : show);
-							setPluginMenuUrl(null);
-							setInstalledMenuName(null);
-							setGroupMenuFor(null);
-							setAssignFor(null);
 						},
 						children: tab === "backup" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: Market_module_css_default.backupGrid,

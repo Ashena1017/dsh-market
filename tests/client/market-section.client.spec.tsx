@@ -491,30 +491,6 @@ describe('MarketSection (jsdom)', () => {
     await waitFor(() => expect(screen.queryByText('whale-skin')).toBeNull())
   })
 
-  it('closes an open card menu when the list scrolls, instead of letting it ride out over the sticky header', async () => {
-    stubFetch({
-      '/dsh-market/installed': { profile: 'web', installed: { 'dsh-loop': '^1.0.0' }, live: [] },
-      '/dsh-market/updates': { updates: {} },
-    })
-    const { container } = render(<MarketSection {...props()} />)
-    await screen.findByText('dsh-loop')
-    const scroller = container.querySelector('[data-dsh-market-root] > [class*="body"]') as HTMLElement
-
-    const card = screen.getByText('Loop task runner').closest('[class*="card"]') as HTMLElement
-    fireEvent.click(within(card).getByRole('button', { name: en.groupMore }))
-    expect(screen.getByRole('menuitem', { name: en.blockAdd })).toBeTruthy()
-    scroller.scrollTop = 120
-    fireEvent.scroll(scroller)
-    expect(screen.queryByRole('menuitem', { name: en.blockAdd })).toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
-    fireEvent.click((await screen.findAllByRole('button', { name: en.groupMore }))[0]!)
-    expect(await screen.findByRole('menuitem', { name: en.uninstall })).toBeTruthy()
-    scroller.scrollTop = 120
-    fireEvent.scroll(scroller)
-    expect(screen.queryByRole('menuitem', { name: en.uninstall })).toBeNull()
-  })
-
   it('marks only the repository-matched card for a same-named local link (#141)', async () => {
     const plugins = [
       { name: 'dsh-vision-bridge', owner: 'ximengxiaolan', url: 'https://github.com/ximengxiaolan/dsh-vision-bridge', category: 'tools', npm: null, description: { en: 'Other bridge' }, install: '' },
