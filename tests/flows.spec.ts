@@ -5030,7 +5030,7 @@ describe('build-script approval flow (#6)', () => {
     expect(yaml).toContain(printed)
   })
 
-  it('approves a git UPDATE with the key pnpm printed, not the stale installed pin (#765)', async () => {
+  it('approves a git UPDATE with the key pnpm printed, not the stale installed pin', async () => {
     // The reported failure, reproduced end to end. A git-hosted plugin is
     // updated: upstream master moved from OLD to NEW, so pnpm's fetcher
     // demands `…git#NEW` in allowBuilds. The PREVIOUS build is still sitting
@@ -5076,14 +5076,15 @@ describe('build-script approval flow (#6)', () => {
     const approve = await bed.dispatch('POST', '/dsh-market/approve-builds', { packages: ['dsh-codearts-auth'] })
     expect(approve.status).toBe(200)
     const yaml = readFileSync(join(fake.profileDir, 'pnpm-workspace.yaml'), 'utf8')
-    // The regression: the key pnpm demanded for the PENDING commit must be
-    // written. Deriving only from the installed spec produced the OLD pin.
+    // This is the regression pin: the key pnpm demanded for the PENDING commit
+    // must be written. Deriving only from the installed spec produced the OLD
+    // pin, so reverting src/routes.ts makes exactly this assertion fail.
+    //
+    // Deliberately NOT asserted here: that the banner's retry then returns
+    // 200. FakeDsh's `failNextAddStderrOnce` is one-shot, so the second add
+    // succeeds whether or not the key was written — it cannot show that pnpm
+    // accepts the key, only that the failure was transient.
     expect(yaml).toContain(`${printed}: true`)
-
-    // And the retry the banner performs now actually succeeds.
-    const retry = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-codearts-auth' })
-    expect(retry.status).toBe(200)
-    expect(retry.json.ok).toBe(true)
   })
 
   it('still refuses a name pnpm never refused, so the approval is not free input', async () => {
