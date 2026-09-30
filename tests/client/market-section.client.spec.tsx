@@ -5856,6 +5856,30 @@ describe('category row expansion', () => {
     expect(body![1]!).toContain('overflow-anchor:none')
   })
 
+  it('pads the scroller\'s end past the floating back-to-top button, so the last card\'s ··· menu is never trapped under it (#765)', () => {
+    // jsdom does no layout, so the overlap itself cannot be observed here.
+    // The three numbers that decide it all live in the stylesheet: the
+    // button's inset, its size, and the scroller's bottom padding.
+    const css = readFileSync(resolve('src/client/Market.module.css'), 'utf8')
+    const rule = (sel: string) => {
+      const m = new RegExp(`^\\.${sel}\\{([^}]*)\\}`, 'mu').exec(css)
+      expect(m, `.${sel} rule not found in Market.module.css`).not.toBeNull()
+      return m![1]!
+    }
+    const px = (decls: string, prop: string) => {
+      const m = new RegExp(`(?:^|[;{\\s])${prop}:([^;]+)`, 'u').exec(decls)
+      expect(m, `${prop} not declared`).not.toBeNull()
+      return m![1]!.trim().split(/\s+/u).map(v => Number.parseFloat(v))
+    }
+    const [, , padBottom] = px(rule('body'), 'padding')
+    const [scrollPadBottom] = px(rule('body'), 'scroll-padding-bottom')
+    const [inset] = px(rule('top'), 'bottom')
+    const [height] = px(rule('topBtn'), 'height')
+    const clearance = inset! + height!
+    expect(padBottom).toBeGreaterThan(clearance)
+    expect(scrollPadBottom).toBeGreaterThan(clearance)
+  })
+
   it('shrinks the open, multi-row category list to one row while the sticky header is pinned by scroll, and restores it once unstuck (#188)', async () => {
     // jsdom lays out nothing — every element reports offsetTop/offsetHeight
     // 0, which is exactly why the sibling "renders every category" test above
