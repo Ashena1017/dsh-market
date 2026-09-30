@@ -5002,9 +5002,34 @@ sendJson(response, 200, { updates })
               : pinnedGitAllowBuildsKey(name, spec, pinned)
             return pinnedKey === null ? [stable] : [stable, pinnedKey]
           }
+          /**
+           * The allowBuilds key pnpm itself printed when it refused to prepare
+           * this package, as an array (empty when it printed none).
+           *
+           * This is the most authoritative answer to "which key will pnpm
+           * read": it names the commit the PENDING install actually fetches.
+           * The installed spec cannot answer that for an update — it still
+           * carries the OLD pin, so `buildKeys` derives a key the profile
+           * already holds, and the retry fails byte-identically.
+           */
+          const printedKeysFor = (name: string): string[] => {
+            const printed = prepareRefusals.get(name)
+            return printed === null || printed === undefined ? [] : [printed]
+          }
           for (const name of requested) {
             if (installed.includes(name)) {
-              packages.push(name, ...await buildKeys(name, String(specs[name] ?? '')))
+              // A git-hosted plugin pnpm just refused to prepare IS in
+              // node_modules — the previous build is still sitting there — so
+              // this is the branch an UPDATE takes, and it is the one that
+              // matters most. Taking it without the refusal's own key is what
+              // made approve-and-retry a no-op for git plugins: `buildKeys`
+              // reads the installed spec, whose pin is the old commit, so the
+              // button re-wrote an entry the profile already had while pnpm
+              // kept demanding the new commit's key. On pnpm 11.x — what DSH
+              // Desktop bundles — only the commit-pinned form authorizes a git
+              // build, so that loop could never terminate. Merge the printed
+              // key exactly as the pending-install branch below does.
+              packages.push(name, ...await buildKeys(name, String(specs[name] ?? '')), ...printedKeysFor(name))
               continue
             }
             if (specs[name] !== undefined) continue
@@ -5018,8 +5043,7 @@ sendJson(response, 200, { updates })
               entry = (await loadRegistry()).plugins.find(p => p.name === name || p.npm === name)
             } catch (error) {
               logEvent('warn', 'approve-builds', `catalog unavailable, authorizing ${name} by name only: ${error instanceof Error ? error.message : String(error)}`)
-              const printed = prepareRefusals.get(name)
-              packages.push(name, ...(printed === null || printed === undefined ? [] : [printed]))
+              packages.push(name, ...printedKeysFor(name))
               continue
             }
             const target = entry === undefined ? null : installTargetFor(entry)
@@ -5032,8 +5056,7 @@ sendJson(response, 200, { updates })
             // it on pnpm 10.26+ and 11.0–11.5; the key pnpm printed, when it
             // printed one, is what the others match.
             const refused = prepareRefusals.has(name)
-            const printed = prepareRefusals.get(name)
-            const printedKeys = printed === null || printed === undefined ? [] : [printed]
+            const printedKeys = printedKeysFor(name)
             if (keys.length > 0 || refused) {
               packages.push(name, ...keys, ...printedKeys)
             }

@@ -5030,6 +5030,62 @@ describe('build-script approval flow (#6)', () => {
     expect(yaml).toContain(printed)
   })
 
+  it('approves a git UPDATE with the key pnpm printed, not the stale installed pin (#765)', async () => {
+    // The reported failure, reproduced end to end. A git-hosted plugin is
+    // updated: upstream master moved from OLD to NEW, so pnpm's fetcher
+    // demands `…git#NEW` in allowBuilds. The PREVIOUS build is still sitting
+    // in node_modules — an update never removes it before the fetch — so the
+    // route took the `installed.includes(name)` branch, derived its key from
+    // the INSTALLED spec (still pinned to OLD), and wrote an entry the profile
+    // already held. The banner's retry then failed byte-identically, forever:
+    // on pnpm 11.x only the commit-pinned form authorizes a git build, and
+    // that key was the one thing never written.
+    const OLD = 'a'.repeat(40)
+    const NEW = 'b'.repeat(40)
+    const remote = 'https://gitee.com/iJetLi/deepseek-harness-codearts.git'
+    const printed = `dsh-codearts-auth@git+${remote}#${NEW}`
+    fake.repos[`git+${remote}`] = {
+      name: 'dsh-codearts-auth',
+      manifest: { name: 'dsh-codearts-auth', version: '0.1.0', dsh: {}, main: 'lib/index.js' },
+      artifacts: ['lib/index.js'],
+      lockCommit: NEW,
+    }
+    // Installed state: the OLD build, pinned to OLD in the manifest.
+    const manifestPath = join(fake.profileDir, 'package.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.dependencies = { ...(manifest.dependencies ?? {}), 'dsh-codearts-auth': `git+${remote}#${OLD}` }
+    writeFileSync(manifestPath, JSON.stringify(manifest))
+    const pkgDir = join(fake.profileDir, 'node_modules', 'dsh-codearts-auth')
+    mkdirSync(join(pkgDir, 'lib'), { recursive: true })
+    writeFileSync(join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'dsh-codearts-auth', version: '0.1.0', dsh: {}, main: 'lib/index.js' }))
+    writeFileSync(join(pkgDir, 'lib', 'index.js'), '')
+    writeFileSync(join(fake.profileDir, 'pnpm-lock.yaml'),
+      `lockfileVersion: 9\n  resolution: {commit: ${OLD}, repo: ${remote}, type: git}\n`)
+    // pnpm refuses the prepare, naming the commit it actually wants.
+    fake.failNextAddStderrOnce = '[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] Failed to prepare git-hosted '
+      + `package fetched from "${remote}": The git-hosted package "dsh-codearts-auth@0.1.0" needs to `
+      + 'execute build scripts but is not in the "allowBuilds" allowlist.\n\n'
+      + 'Add the package to "allowBuilds" in your project\'s pnpm-workspace.yaml to allow it to run scripts. For example:\n'
+      + `allowBuilds:\n  ${printed}: true\n`
+
+    const update = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-codearts-auth' })
+    expect(update.status).toBe(502)
+    expect(update.json.ignoredBuilds).toEqual(['dsh-codearts-auth'])
+
+    const approve = await bed.dispatch('POST', '/dsh-market/approve-builds', { packages: ['dsh-codearts-auth'] })
+    expect(approve.status).toBe(200)
+    const yaml = readFileSync(join(fake.profileDir, 'pnpm-workspace.yaml'), 'utf8')
+    // The regression: the key pnpm demanded for the PENDING commit must be
+    // written. Deriving only from the installed spec produced the OLD pin.
+    expect(yaml).toContain(`${printed}: true`)
+
+    // And the retry the banner performs now actually succeeds.
+    const retry = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-codearts-auth' })
+    expect(retry.status).toBe(200)
+    expect(retry.json.ok).toBe(true)
+  })
+
   it('still refuses a name pnpm never refused, so the approval is not free input', async () => {
     const approve = await bed.dispatch('POST', '/dsh-market/approve-builds', { packages: ['@evil/anything'] })
     expect(approve.status).toBe(400)
