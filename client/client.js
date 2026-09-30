@@ -344,6 +344,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			agentBusyUpdateQueued: "Agent 正忙，已排队，空闲后自动更新（可在右上角「任务」里取消）。",
 			agentBusyUninstallQueued: "Agent 正忙，已排队，空闲后自动卸载（可在右上角「任务」里取消）。",
 			queuedRunBlocked: "有 {0} 个会话正在运行，现在还不能执行：这类操作会直接替换插件文件，运行中的 Agent 可能中途报错。它们空闲后会自动开始（也可以先在「任务」里取消这一条）。",
+			queuedRunBusy: "另一个安装、更新或卸载还在进行，现在还不能开始：这一条留在队列里，等它完成后会自动开始，不需要再点一次。",
 			queuedInstallGone: "这一条要装的插件在当前目录里找不到了（目录刷新过或换了页），已从队列移除。请在目录里重新找到它再装一次。",
 			agentQueueStaleGone: "排队时它还在已安装列表里，现在已不在，因此跳过（没有卸载）。",
 			agentQueueStaleNoUpdate: "排队时它有可用更新，现在没有了，已跳过。",
@@ -1025,6 +1026,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			agentBusyUpdateQueued: "Agent is busy — queued and will update automatically when idle (cancel it in Tasks, top right).",
 			agentBusyUninstallQueued: "Agent is busy — queued and will uninstall automatically when idle (cancel it in Tasks, top right).",
 			queuedRunBlocked: "{0} session(s) are running, so this cannot start yet: these operations replace plugin files in place, and a working agent can fail mid-turn. It will begin on its own once they go idle (or cancel this entry in Tasks).",
+			queuedRunBusy: "Another install, update or uninstall is still running, so this cannot start yet: it stays queued and begins on its own when that one finishes — no need to press again.",
 			queuedInstallGone: "The plugin this entry was going to install is no longer in the catalog (it was refreshed or you changed pages), so the entry was removed. Find it in the catalog and install it again.",
 			agentQueueStaleGone: "It was installed when you queued this, and is not now — skipped, nothing was uninstalled.",
 			agentQueueStaleNoUpdate: "It had an update available when you queued this, and does not now — skipped.",
@@ -8937,10 +8939,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 								setOperationsOpen(true);
 								return;
 							}
-							setRecords((list) => patch(list, recordId, {
-								state: "failed",
-								reason: t("busyWait")
-							}));
+							setRecords((list) => patch(list, recordId, { state: "queued" }));
 							setOperationsOpen(true);
 							return;
 						}
@@ -9268,11 +9267,9 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 								setOperationsOpen(true);
 								return;
 							}
-							setRecords((list) => patch(list, updateRecordId, {
-								state: "failed",
-								reason: t("busyWait")
-							}));
-							setInstallError(t("busyWait"));
+							setRecords((list) => patch(list, updateRecordId, { state: "queued" }));
+							setInstallError(t("queuedRunBusy"));
+							setOperationsOpen(true);
 							return;
 						}
 						if (body.hostIncompatible && typeof body.hostIncompatible === "object") {
@@ -9825,6 +9822,20 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			updatingNameRef.current = updatingName;
 			const removingNameRef = (0, react.useRef)(null);
 			removingNameRef.current = removingName;
+			/**
+			* The records as of the last commit, for the drain's tick.
+			*
+			* The tick must not read the list out of its own `setRecords` updater.
+			* React only runs that updater synchronously when the fiber has no pending
+			* work (its eager-state optimization, react-dom dispatchSetState); an
+			* interval tick regularly races the status poll's state writes, and when
+			* the updater is deferred the read returns null BEFORE it runs — while the
+			* updater still removes the row it finds when render finally calls it. The
+			* drain then deleted a queued operation instead of starting it, and the
+			* persistence effect rewrote the durable queue without it.
+			*/
+			const recordsRef = (0, react.useRef)(records);
+			recordsRef.current = records;
 			const dataRef = (0, react.useRef)(null);
 			dataRef.current = data;
 			const doInstallRef = (0, react.useRef)(null);
@@ -9833,6 +9844,24 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			doUpdateRef.current = doUpdate;
 			const doUninstallRef = (0, react.useRef)(null);
 			doUninstallRef.current = doUninstall;
+			/**
+			* Whether a plugin operation started from THIS page is still in flight.
+			*
+			* The host runs one mutation at a time and answers a second one with 409
+			* (routes.ts withMutationLock) rather than queueing it, so every start path
+			* has to look before it fires. The catalog and installed cards do it by
+			* disabling their button on `busyUrl`/`updatingName`/`removingName`; the
+			* drain does it on these refs. The Tasks panel's "run now" asked only about
+			* the agent guard, so a batch of clicks sent one request that ran and N-1
+			* the host refused — and a refusal used to be recorded as a failure, which
+			* is not part of the durable queue.
+			*
+			* Refs, not `statusRef.current.busy`: that sample is up to a whole poll
+			* interval old, and the batch lands inside exactly that window. Asking the
+			* host "are you busy" cannot answer a question about a request this page
+			* has just sent.
+			*/
+			const operationInFlight = (0, react.useCallback)(() => busyUrlRef.current !== null || updatingNameRef.current !== null || removingNameRef.current !== null, []);
 			/**
 			* The install queue drain: agents-busy 409s no longer ask the user to come
 			* back later — the queued record runs itself once agents go idle and the
@@ -9846,7 +9875,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				let disposed = false;
 				const timer = setInterval(() => {
 					if (drainingRef.current) return;
-					if (busyUrlRef.current !== null || updatingNameRef.current !== null || removingNameRef.current !== null) return;
+					if (operationInFlight()) return;
 					fetch(api("/dsh-market/status"), { cache: "no-store" }).then((res) => res.json()).then((status) => {
 						if (disposed) return;
 						const runningAgents = Array.isArray(status.runningAgents) ? status.runningAgents.map(String) : [];
@@ -9856,17 +9885,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							runningAgents
 						};
 						if (busy || runningAgents.length > 0) return;
-						if (busyUrlRef.current !== null || updatingNameRef.current !== null || removingNameRef.current !== null) return;
-						let next = null;
-						let hasRunning = false;
-						setRecords((prev) => {
-							hasRunning = prev.some((record) => record.state === "running");
-							const found = prev.find((record) => record.state === "queued");
-							next = found ?? null;
-							return found === void 0 ? prev : prev.filter((record) => record.id !== found.id);
-						});
-						if (next === null || hasRunning) return;
-						const task = next;
+						if (operationInFlight()) return;
+						const task = recordsRef.current.find((record) => record.state === "queued");
+						if (task === void 0 || recordsRef.current.some((record) => record.state === "running")) return;
+						setRecords((list) => list.filter((record) => record.id !== task.id));
 						drainingRef.current = true;
 						try {
 							if (task.kind === "install") {
@@ -9892,6 +9914,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					setOperationsOpen(true);
 					return;
 				}
+				if (operationInFlight() || statusRef.current.busy) {
+					setInstallError(t("queuedRunBusy"));
+					setOperationsOpen(true);
+					return;
+				}
 				if (record.kind === "install") {
 					const plugin = data?.plugins.find((candidate) => candidate.url === record.url);
 					if (plugin === void 0) {
@@ -9914,6 +9941,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				doInstall,
 				doUpdate,
 				doUninstall,
+				operationInFlight,
 				t
 			]);
 			/** Live enable/disable of one installed plugin (#60). `reload` opts the

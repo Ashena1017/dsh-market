@@ -1661,6 +1661,141 @@ describe('MarketSection (jsdom)', () => {
     }
   })
 
+  it('keeps the other rows queued when a batch of "run now" is clicked at once (#775)', async () => {
+    // Reported: four installs sat queued behind a running agent. The sessions
+    // were cancelled, all four rows were told to "run now", and only the first
+    // reached pnpm — the rest came back with the host's lock refusal ("another
+    // install is already running" / 409 without agentsBusy) and were recorded
+    // as FAILURES. A failure is not part of the durable queue (only `queued`
+    // rows persist), so the restart that ends the first install took the other
+    // three off the panel for good.
+    //
+    // /status is left in flight on purpose. The drain samples it every 2s and
+    // the user's clicks landed in the window between the idle sample and the
+    // next tick; statusRef's initial { busy: false, runningAgents: [] } IS that
+    // sample. Freezing the poll also keeps the drain out of the way, so the
+    // test measures the run-now path instead of racing a timer — and it means
+    // a fix that only consults the polled `busy` (stale by up to 2s, the exact
+    // window this happens in) cannot pass.
+    let inFlight = 0
+    const fetchMock = vi.fn((input: unknown, init?: RequestInit) => {
+      const path = String(input).split('?')[0]
+      const method = (init?.method ?? 'GET').toUpperCase()
+      const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status }))
+      if (path === '/dsh-market/registry') {
+        return json({ source: 'live', registry: REGISTRY, hostVersion: '0.1.2-alpha.2' })
+      }
+      if (path === '/dsh-market/installed') {
+        return json({ profile: 'web', installed: {}, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [], blocked: [] })
+      }
+      if (path === '/dsh-market/updates') return json({ updates: {} })
+      if (path === '/dsh-market/status') return new Promise<Response>(() => { /* see above */ })
+      if (path === '/dsh-market/install' && method === 'POST') {
+        // The host's mutation lock: one operation at a time, and a second
+        // request is refused immediately instead of queueing (routes.ts
+        // withMutationLock). The first install never returns — it is still
+        // running, which is the state the user clicked the other rows in.
+        if (inFlight > 0) return json({ error: 'another install is already running' }, 409)
+        inFlight += 1
+        return new Promise<Response>(() => {})
+      }
+      return Promise.reject(new Error(`unstubbed fetch: ${String(input)}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      localStorage.setItem('dshm-queue-v1', JSON.stringify([
+        { kind: 'install', name: 'dsh-loop', url: 'https://github.com/alice/dsh-loop' },
+        { kind: 'install', name: 'dsh-notify', url: 'https://github.com/bob/dsh-notify' },
+      ]))
+      render(<MarketSection {...props()} />)
+      // findAll, not find: the restored queue row carries the same name as the
+      // catalog card, and which of the two lands first is a timing detail.
+      await screen.findAllByText('dsh-loop')
+      const rowFor = (name: string): HTMLElement => {
+        const row = [...document.querySelectorAll('[class*="opRow"]')].find(el => el.textContent?.includes(name))
+        expect(row, `no Tasks row for ${name}`).toBeTruthy()
+        return row as HTMLElement
+      }
+      await waitFor(() => {
+        expect(within(rowFor('dsh-loop')).queryByRole('button', { name: en.opRunNow })).not.toBeNull()
+        expect(within(rowFor('dsh-notify')).queryByRole('button', { name: en.opRunNow })).not.toBeNull()
+      })
+
+      // The batch of clicks the user made, one per row.
+      fireEvent.click(within(rowFor('dsh-loop')).getByRole('button', { name: en.opRunNow }))
+      fireEvent.click(within(rowFor('dsh-notify')).getByRole('button', { name: en.opRunNow }))
+
+      // The batch does not fire requests it knows cannot succeed: the lock is
+      // visibly held here, so the second click is answered rather than sent —
+      // #752's rule, applied to the other guard. Sending it is what produced
+      // the three "another install is still running" rows in the report.
+      expect(fetchMock.mock.calls.filter(([url, init]) =>
+        String(url).endsWith('/dsh-market/install') && (init?.method ?? 'GET').toUpperCase() === 'POST',
+      )).toHaveLength(1)
+
+      // The second row is still the user's pending work…
+      await waitFor(() => {
+        expect(within(rowFor('dsh-notify')).queryByRole('button', { name: en.opRunNow })).not.toBeNull()
+      })
+      expect(document.querySelector('[class*="opPanel"]')!.textContent).not.toContain(en.busyWait)
+      // …which is also what lets it survive the restart the first install ends
+      // with: only `queued` rows are persisted, so a failure here IS the loss.
+      expect(JSON.parse(localStorage.getItem('dshm-queue-v1') ?? '[]'))
+        .toEqual([expect.objectContaining({ kind: 'install', name: 'dsh-notify' })])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('re-queues an install the host refuses while its lock is held, instead of failing it (#775)', async () => {
+    // The other 409 the host can answer with: the mutation lock is held, by an
+    // operation this page did not start (or one whose row is already gone).
+    // The refusal happens before pnpm is touched, so it is a deferral — and a
+    // deferral recorded as a failure is not part of the durable queue, so the
+    // next restart drops the user's install. The drain has to pick it up.
+    let attempts = 0
+    const fetchMock = vi.fn((input: unknown, init?: RequestInit) => {
+      const path = String(input).split('?')[0]
+      const method = (init?.method ?? 'GET').toUpperCase()
+      const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status }))
+      if (path === '/dsh-market/registry') {
+        return json({ source: 'live', registry: REGISTRY, hostVersion: '0.1.2-alpha.2' })
+      }
+      if (path === '/dsh-market/installed') {
+        return json({ profile: 'web', installed: {}, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [], blocked: [] })
+      }
+      if (path === '/dsh-market/updates') return json({ updates: {} })
+      if (path === '/dsh-market/status') {
+        return json({ active: false, busy: false, pnpm: true, boot: 'boot-1', restart: true, installed: {}, runningAgents: [] })
+      }
+      if (path === '/dsh-market/install' && method === 'POST') {
+        attempts += 1
+        if (attempts === 1) return json({ error: 'another install is already running' }, 409)
+        return json({ ok: true, hot: false })
+      }
+      return Promise.reject(new Error(`unstubbed fetch: ${String(input)}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      localStorage.setItem('dshm-queue-v1', JSON.stringify([
+        { kind: 'install', name: 'dsh-loop', url: 'https://github.com/alice/dsh-loop' },
+      ]))
+      render(<MarketSection {...props()} />)
+      await screen.findAllByText('dsh-loop')
+      // The drain's first attempt is refused by the lock…
+      await waitFor(() => expect(attempts).toBe(1), { timeout: 8000 })
+      const panelText = () => document.querySelector('[class*="opPanel"]')!.textContent ?? ''
+      expect(panelText()).not.toContain(en.busyWait)
+      expect(JSON.parse(localStorage.getItem('dshm-queue-v1') ?? '[]'))
+        .toEqual([expect.objectContaining({ name: 'dsh-loop' })])
+      // …and the next tick runs it, because the row was never declared dead.
+      await waitFor(() => expect(attempts).toBe(2), { timeout: 8000 })
+      await waitFor(() => expect(panelText()).toContain(en.opDoneRefresh), { timeout: 8000 })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('drains a queued install once agents go idle', async () => {
     // NOTE: no fake timers here — the drain fires on a real 2s interval and
     // the install POST resolves on the microtask queue. Fake timers freeze

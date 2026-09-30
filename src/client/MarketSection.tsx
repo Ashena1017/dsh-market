@@ -2914,7 +2914,16 @@ export function MarketSection(props: MarketSectionProps) {
               setOperationsOpen(true)
               return
             }
-            setRecords(list => patchRecord(list, recordId, { state: 'failed', reason: t('busyWait') }))
+            // The host's mutation lock is the other 409, and it is a deferral
+            // for the same reason: it refuses BEFORE touching pnpm, so nothing
+            // failed and nothing changed. Recording it as `failed` is what
+            // lost the rest of a batch of "run now" clicks — a failure is not
+            // part of the durable queue, and the restart that ends the
+            // operation holding the lock reloads the page and takes the row
+            // with it. `queued` means the drain runs it when the lock is free,
+            // and the position on the row already says where it sits relative
+            // to the one ahead.
+            setRecords(list => patchRecord(list, recordId, { state: 'queued' }))
             setOperationsOpen(true)
             return
           }
@@ -3273,8 +3282,14 @@ export function MarketSection(props: MarketSectionProps) {
               setOperationsOpen(true)
               return
             }
-            setRecords(list => patchRecord(list, updateRecordId, { state: 'failed', reason: t('busyWait') }))
-            setInstallError(t('busyWait'))
+            // Same treatment as installs, and for the same reason: the lock
+            // refusal happens before pnpm is touched, so it defers this update
+            // rather than failing it. `queued` is also the only state the
+            // durable queue keeps, so this is what lets the row outlive the
+            // restart that ends the operation holding the lock.
+            setRecords(list => patchRecord(list, updateRecordId, { state: 'queued' }))
+            setInstallError(t('queuedRunBusy'))
+            setOperationsOpen(true)
             return
           }
           // The target says it needs a newer host than this one (#404). Not
@@ -3838,6 +3853,20 @@ export function MarketSection(props: MarketSectionProps) {
   updatingNameRef.current = updatingName
   const removingNameRef = useRef<string | null>(null)
   removingNameRef.current = removingName
+  /**
+   * The records as of the last commit, for the drain's tick.
+   *
+   * The tick must not read the list out of its own `setRecords` updater.
+   * React only runs that updater synchronously when the fiber has no pending
+   * work (its eager-state optimization, react-dom dispatchSetState); an
+   * interval tick regularly races the status poll's state writes, and when
+   * the updater is deferred the read returns null BEFORE it runs — while the
+   * updater still removes the row it finds when render finally calls it. The
+   * drain then deleted a queued operation instead of starting it, and the
+   * persistence effect rewrote the durable queue without it.
+   */
+  const recordsRef = useRef<OperationRecord[]>(records)
+  recordsRef.current = records
   const dataRef = useRef<typeof data>(null)
   dataRef.current = data
   const doInstallRef = useRef<((plugin: RegistryPlugin) => void) | null>(null)
@@ -3846,6 +3875,27 @@ export function MarketSection(props: MarketSectionProps) {
   doUpdateRef.current = doUpdate
   const doUninstallRef = useRef<((name: string) => Promise<void>) | null>(null)
   doUninstallRef.current = doUninstall
+
+  /**
+   * Whether a plugin operation started from THIS page is still in flight.
+   *
+   * The host runs one mutation at a time and answers a second one with 409
+   * (routes.ts withMutationLock) rather than queueing it, so every start path
+   * has to look before it fires. The catalog and installed cards do it by
+   * disabling their button on `busyUrl`/`updatingName`/`removingName`; the
+   * drain does it on these refs. The Tasks panel's "run now" asked only about
+   * the agent guard, so a batch of clicks sent one request that ran and N-1
+   * the host refused — and a refusal used to be recorded as a failure, which
+   * is not part of the durable queue.
+   *
+   * Refs, not `statusRef.current.busy`: that sample is up to a whole poll
+   * interval old, and the batch lands inside exactly that window. Asking the
+   * host "are you busy" cannot answer a question about a request this page
+   * has just sent.
+   */
+  const operationInFlight = useCallback((): boolean =>
+    busyUrlRef.current !== null || updatingNameRef.current !== null || removingNameRef.current !== null,
+  [])
 
   /**
    * The install queue drain: agents-busy 409s no longer ask the user to come
@@ -3860,7 +3910,7 @@ export function MarketSection(props: MarketSectionProps) {
     let disposed = false
     const timer = setInterval(() => {
       if (drainingRef.current) return
-      if (busyUrlRef.current !== null || updatingNameRef.current !== null || removingNameRef.current !== null) return
+      if (operationInFlight()) return
       void fetch(api('/dsh-market/status'), { cache: 'no-store' })
         .then(res => res.json())
         .then(status => {
@@ -3869,17 +3919,10 @@ export function MarketSection(props: MarketSectionProps) {
           const busy = status.busy === true
           statusRef.current = { busy, runningAgents }
           if (busy || runningAgents.length > 0) return
-          if (busyUrlRef.current !== null || updatingNameRef.current !== null || removingNameRef.current !== null) return
-          let next: OperationRecord | null = null
-          let hasRunning = false
-          setRecords(prev => {
-            hasRunning = prev.some(record => record.state === 'running')
-            const found = prev.find(record => record.state === 'queued')
-            next = found ?? null
-            return found === undefined ? prev : prev.filter(record => record.id !== found.id)
-          })
-          if (next === null || hasRunning) return
-          const task: OperationRecord = next
+          if (operationInFlight()) return
+          const task = recordsRef.current.find(record => record.state === 'queued')
+          if (task === undefined || recordsRef.current.some(record => record.state === 'running')) return
+          setRecords(list => list.filter(record => record.id !== task.id))
           drainingRef.current = true
           try {
             if (task.kind === 'install') {
@@ -3915,6 +3958,16 @@ export function MarketSection(props: MarketSectionProps) {
       setOperationsOpen(true)
       return
     }
+    // The agent guard is not the only thing that can hold this row: the host's
+    // mutation lock answers 409 while any earlier operation is in flight. The
+    // panel has one "run now" per row and no card-level `disabled` to stop a
+    // batch, so without this the second click of a batch is refused, and only
+    // the first of N installs the user asked for survives.
+    if (operationInFlight() || statusRef.current.busy) {
+      setInstallError(t('queuedRunBusy'))
+      setOperationsOpen(true)
+      return
+    }
     if (record.kind === 'install') {
       const plugin = data?.plugins.find(candidate => candidate.url === record.url)
       if (plugin === undefined) {
@@ -3936,7 +3989,7 @@ export function MarketSection(props: MarketSectionProps) {
       setRecords(prev => drop(prev, record.id))
       void doUninstall(record.name)
     }
-  }, [data, doInstall, doUpdate, doUninstall, t])
+  }, [data, doInstall, doUpdate, doUninstall, operationInFlight, t])
 
   /** Live enable/disable of one installed plugin (#60). `reload` opts the
    * card-level theme flow into a page refresh so the visual result lands
