@@ -144,6 +144,10 @@ function activationMeta(
   }
   if (state === 'live') return { label: t('stateLive'), dot: 'done' }
   if (state === 'restart') return { label: t('stateRestart'), dot: 'warning' }
+  // The host's own boot gate will skip this plugin on every boot: its dsh
+  // peer range excludes the running runtime (#757). Rare and the user must
+  // act, so it gets the red dot broken uses.
+  if (state === 'incompatible') return { label: t('stateIncompatible'), dot: 'error' }
   if (state === 'inert') return { label: t('stateInert'), dot: 'warning' }
   if (state === 'broken') return { label: t('stateBroken'), dot: 'error' }
   if (state === 'disabled') return { label: t('stateDisabled'), dot: 'warning' }
@@ -2873,7 +2877,11 @@ export function MarketSection(props: MarketSectionProps) {
             setDoneUrls(urls => urls.filter(url => url !== plugin.url))
             setHotUrls(urls => urls.includes(plugin.url) ? urls : urls.concat(plugin.url))
             setHotNames(names => names.includes(plugin.name) ? names : names.concat(plugin.name))
-          } else {
+          } else if (body.activation?.[plugin.name]?.state !== 'incompatible') {
+            // An incompatible plugin stays incompatible across restarts, so
+            // "restart to apply" would promise a fix no restart can deliver;
+            // the activation warning on the installed card already says what
+            // to do instead.
             setDoneUrls(urls => urls.includes(plugin.url) ? urls : urls.concat(plugin.url))
           }
           if (body.compatibility?.code === 'soft-incompatible') {

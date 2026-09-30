@@ -54,7 +54,7 @@ import { createThemeManager, type LoaderEntry } from './themes.ts'
 import { readJsonBody, sameOrigin, sendJson } from './http.ts'
 import { detectedDebugger, detectedSupervisor, restartAllowed, scheduleRestart, servingPort, trustedRestartRequest, trustedDownloadRequest, type RecoveryHandoffConfig } from './restart.ts'
 import type { RecoveryPlugin } from './recovery.ts'
-import { activationAfterReplace, brokenClientBundles, checkClientBundle, hasHostHalf, newlyBrokenBundles, verifyActivation } from './verify.ts'
+import { activationAfterReplace, brokenClientBundles, checkClientBundle, defaultHostRuntimeFacts, hasHostHalf, hostPeerGate, newlyBrokenBundles, peerGateRemedy, verifyActivation } from './verify.ts'
 import {
   carrierDisableIds, disableRow, enableRow, findUserPatchPath, foreignRowIds, isProtectedModule, packagePatchFlags,
   readUserPatchState, removeRowBlocks, rowIdsForPackage, userPatchPackageReferences,
@@ -661,18 +661,32 @@ export function mountMarketRoutes(
       } else if (await themes.setEntryDisabled(name, false)) {
         ok = true
       } else {
-        const result = await hotMount(host, dir, name)
-        ok = result.ok
-        reason = result.reason ?? undefined
-        // Deliberately NOT clearing replacedWhileLive here (#685). This used
-        // to say "a mount that succeeded imported the module as it is on
-        // disk NOW", which is false exactly when the flag is set: it is only
-        // set when the host half was LIVE at update time, i.e. this process
-        // has already evaluated that module URL, and Node's ESM cache serves
-        // any later import of the same URL — the profile layout is hoisted,
-        // so an update rewrites the files in place and the URL never changes.
-        // Off-and-on re-creates the fiber around the OLD module. Only a
-        // restart ends the process that holds it, and the flag with it.
+        // #758: the group toggle reaches this branch without the route-level
+        // 409, so the gate must hold here too — mounting a plugin the host's
+        // own boot gate would skip activates code the host refuses to load.
+        // Client-only plugins never load in the host process, so the peer
+        // cap cannot bite — gate only what has a host half (#758 review).
+        const gate = hasHostHalf(config.profile, name, dir)
+          ? hostPeerGate(dir, name, defaultHostRuntimeFacts(dir))
+          : null
+        if (gate !== null) {
+          const remedy = peerGateRemedy(gate)
+          ok = false
+          reason = `${name} 新版要求宿主 ${gate.range},当前运行 ${gate.runtimeVersion},开了也不会生效;${remedy.zh} / ${name} needs host ${gate.range} but this host runs ${gate.runtimeVersion} — enabling it now would not take effect; ${remedy.en}`
+        } else {
+          const result = await hotMount(host, dir, name)
+          ok = result.ok
+          reason = result.reason ?? undefined
+          // Deliberately NOT clearing replacedWhileLive here (#685). This used
+          // to say "a mount that succeeded imported the module as it is on
+          // disk NOW", which is false exactly when the flag is set: it is only
+          // set when the host half was LIVE at update time, i.e. this process
+          // has already evaluated that module URL, and Node's ESM cache serves
+          // any later import of the same URL — the profile layout is hoisted,
+          // so an update rewrites the files in place and the URL never changes.
+          // Off-and-on re-creates the fiber around the OLD module. Only a
+          // restart ends the process that holds it, and the flag with it.
+        }
       }
     } else {
       ok = await hotUnmount(name) || await themes.setEntryDisabled(name, true)
@@ -2637,6 +2651,25 @@ export function mountMarketRoutes(
               error: `${name} 属于宿主基础设施,禁止开关(会破坏热加载/传输/存储链) / ${name} is host infrastructure and cannot be toggled (it would break the hot-reload/transport/storage chain)`,
             })
             return
+          }
+          // #757: enabling a plugin the host's boot gate would skip anyway
+          // would replay the bug — the toggle flips, the hot mount fails, and
+          // the card reads "enabled, restart to apply" forever because no
+          // restart can ever load it. Refuse up front and say what to do.
+          // Client-only plugins never touch the host process, so the cap
+          // cannot bite them (#758 review).
+          if (enabled) {
+            const gate = hasHostHalf(config.profile, name, activeProfileDir)
+              ? hostPeerGate(activeProfileDir, name, defaultHostRuntimeFacts(activeProfileDir))
+              : null
+            if (gate !== null) {
+              const remedy = peerGateRemedy(gate)
+              sendJson(response, 409, {
+                error: `${name} 新版要求宿主 ${gate.range},当前运行 ${gate.runtimeVersion},开了也不会生效;${remedy.zh} / ${name} needs host ${gate.range} but this host runs ${gate.runtimeVersion} — enabling it now would not take effect; ${remedy.en}`,
+                incompatible: true,
+              })
+              return
+            }
           }
           pendingRollbacks.clear()
           let ok: boolean
@@ -5718,20 +5751,42 @@ sendJson(response, 200, { updates })
                     // inventory (live names and `#<id>`) is the fact
                     // "already active this session", the same source
                     // verifyActivation reads below.
-                    const live = liveNames().has(name)
+                    const adopted = liveNames().has(name)
                       || liveNames().has(`#${name}`)
                       || bundlePatchInsertedIds(join(activeProfileDir, 'node_modules', name))
                         .some(id => liveNames().has(`#${id}`))
-                      || (pluginCategories(entry).includes('theme')
-                        ? await themes.activateTheme(name)
-                        : (await hotMount(host, activeProfileDir, name)).ok)
+                    let live = adopted
+                    if (!adopted && !pluginCategories(entry).includes('theme')) {
+                      // #758: this fallback hot-mount bypasses the host's own
+                      // boot gate, which would skip a peer-incompatible
+                      // plugin on every boot. Check the same gate first and
+                      // leave it unmounted when it would bite; the activation
+                      // report below then reads incompatible. Client-only
+                      // plugins never load in the host process, so the cap
+                      // cannot bite — skip the gate for them (#758 review),
+                      // matching what verifyActivation does outside bundles.
+                      const gate = hasHostHalf(config.profile, name, activeProfileDir)
+                        ? hostPeerGate(activeProfileDir, name, defaultHostRuntimeFacts(activeProfileDir))
+                        : null
+                      if (gate !== null) {
+                        logEvent('warn', 'install', `${name}: ${gate.peer} ${gate.range} excludes runtime ${gate.runtimeVersion}; leaving it unmounted for the next boot to skip (#757)`)
+                        live = false
+                      } else {
+                        live = (await hotMount(host, activeProfileDir, name)).ok
+                      }
+                    } else if (!adopted) {
+                      live = await themes.activateTheme(name)
+                    }
                     if (!live) hot = false
                   }
                 }
                 activation = {}
                 const live = liveNames()
+                // Same facts the mount decision above used, so the verdict
+                // cannot disagree with it within one request.
+                const hostFacts = defaultHostRuntimeFacts(activeProfileDir)
                 for (const name of added) {
-                  activation[name] = verifyActivation(config.profile, name, live, activeProfileDir, disabled.has(name))
+                  activation[name] = verifyActivation(config.profile, name, live, activeProfileDir, disabled.has(name), hostFacts)
                 }
               }
             }

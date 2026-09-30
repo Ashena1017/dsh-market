@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { profileDir } from '../src/profile.ts'
-import { brokenClientBundles, checkClientBundle, clientBundlePath, newlyBrokenBundles, verifyActivation } from '../src/verify.ts'
+import { brokenClientBundles, checkClientBundle, clientBundlePath, hostPeerGate, newlyBrokenBundles, verifyActivation } from '../src/verify.ts'
 
 let home: string
 beforeEach(() => {
@@ -116,6 +116,110 @@ describe('verifyActivation (P0-2)', () => {
     const result = verifyActivation('web', 'client-a', new Set())
     expect(result).toMatchObject({ state: 'inert', hot: false, bundle: false })
     expect(result.reasons.join(' ')).toMatch(/dsh\.bundle/)
+  })
+
+  // #757: a plugin whose dsh peer range is capped below the running host is
+  // skipped by the host's own boot gate (evaluatePluginCompatibility in
+  // @deepseek-ai/dsh-app-boot) on EVERY boot. The bundle layer keeps
+  // declaring it, the loader never mounts it, and "restart to apply" was an
+  // infinite loop: restarting can never activate it. The market must predict
+  // the host's verdict with the host's own semantics — satisfiesRange with
+  // includePrerelease, @deepseek-ai/dsh and @deepseek-ai/dsh-* peers only —
+  // and say `incompatible` instead of `restart`.
+  it('incompatible when the host will skip the bundle on every boot — peer capped below the runtime (#757)', () => {
+    profile(['dsh-capped'])
+    pkg('dsh-capped', {
+      version: '0.5.1',
+      peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    const result = verifyActivation('web', 'dsh-capped', new Set(), undefined, false,
+      { runtimeVersion: '0.2.0', exemptions: {} })
+    expect(result).toMatchObject({ state: 'incompatible', hot: false, bundle: true })
+    expect(result.reasons.join(' ')).toMatch(/0\.1\.0-rc\.6/)
+    expect(result.reasons.join(' ')).toMatch(/0\.2\.0/)
+  })
+
+  it('an exempted runtime version boots after all — restart, not incompatible (#757)', () => {
+    profile(['dsh-capped'])
+    pkg('dsh-capped', {
+      version: '0.5.1',
+      peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    const result = verifyActivation('web', 'dsh-capped', new Set(), undefined, false,
+      { runtimeVersion: '0.2.0', exemptions: { 'dsh-capped@0.5.1': ['0.2.0'] } })
+    expect(result).toMatchObject({ state: 'restart', hot: false, bundle: true })
+  })
+
+  it('an open peer range never marks it incompatible — the host accepts it (#757)', () => {
+    profile(['dsh-open'])
+    pkg('dsh-open', {
+      version: '0.59.2',
+      peerDependencies: { '@deepseek-ai/dsh': '>=0.1.5-rc.1' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    const result = verifyActivation('web', 'dsh-open', new Set(), undefined, false,
+      { runtimeVersion: '0.2.0', exemptions: {} })
+    expect(result).toMatchObject({ state: 'restart', hot: false, bundle: true })
+  })
+
+  it('unknown runtime version keeps the old verdict — uncertainty never marks it incompatible (#757)', () => {
+    profile(['dsh-capped'])
+    pkg('dsh-capped', {
+      version: '0.5.1',
+      peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    const result = verifyActivation('web', 'dsh-capped', new Set(), undefined, false,
+      { runtimeVersion: null, exemptions: {} })
+    expect(result).toMatchObject({ state: 'restart', hot: false, bundle: true })
+  })
+
+  it('incompatible with the remedy pointing at upgrading dsh when the runtime is below the range (#758)', () => {
+    // The #757 case upside down: the host is OLDER than the range's floor,
+    // so upgrading dsh genuinely satisfies the peer. The remedy must offer
+    // it, and must not claim upgrading would not help.
+    const dir = profile(['dsh-capped'])
+    pkg('dsh-capped', {
+      version: '0.5.1',
+      peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    const gate = hostPeerGate(dir, 'dsh-capped', { runtimeVersion: '0.0.9', exemptions: {} })
+    expect(gate).toMatchObject({ hostTooOld: true })
+    const result = verifyActivation('web', 'dsh-capped', new Set(), undefined, false,
+      { runtimeVersion: '0.0.9', exemptions: {} })
+    expect(result).toMatchObject({ state: 'incompatible', hot: false, bundle: true })
+    expect(result.reasons.join(' ')).toMatch(/升级 dsh、等插件更新适配或装回旧版本/)
+    expect(result.reasons.join(' ')).toMatch(/upgrade dsh, wait for an updated release, or go back to the previous version/)
+    expect(result.reasons.join(' ')).not.toMatch(/解决不了/)
+  })
+
+  it('incompatible without suggesting an upgrade when the runtime is above the range (#758)', () => {
+    // The #757 shape itself: the running host already outruns the plugin's
+    // cap, so no dsh upgrade can satisfy it. Offering "or upgrade dsh"
+    // here points the wrong way (#758 review).
+    const dir = profile(['dsh-capped'])
+    pkg('dsh-capped', {
+      version: '0.5.1',
+      peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    const gate = hostPeerGate(dir, 'dsh-capped', { runtimeVersion: '0.2.0', exemptions: {} })
+    expect(gate).toMatchObject({ hostTooOld: false })
+    const result = verifyActivation('web', 'dsh-capped', new Set(), undefined, false,
+      { runtimeVersion: '0.2.0', exemptions: {} })
+    expect(result).toMatchObject({ state: 'incompatible', hot: false, bundle: true })
+    expect(result.reasons.join(' ')).toMatch(/等插件更新适配或装回旧版本;升级 dsh 解决不了/)
+    expect(result.reasons.join(' ')).toMatch(/upgrading dsh will not help/)
+    expect(result.reasons.join(' ')).not.toMatch(/或升级 dsh/)
   })
 
   it('inert when installed as a plain dependency (no dsh.bundle, no dsh.client)', () => {

@@ -628,6 +628,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			gotIt: "关闭",
 			stateLive: "已生效",
 			stateRestart: "已安装，重启后生效",
+			stateIncompatible: "已安装，与当前 dsh 不兼容",
 			stateInert: "已安装，未生效",
 			stateDependencyLibrary: "{0} 的依赖库",
 			stateBroken: "已安装，校验未通过",
@@ -1310,6 +1311,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			gotIt: "Dismiss",
 			stateLive: "Active",
 			stateRestart: "Installed — restart to apply",
+			stateIncompatible: "Installed — incompatible with this dsh",
 			stateInert: "Installed, not active",
 			stateDependencyLibrary: "Library for {0}",
 			stateBroken: "Installed, verification failed",
@@ -6289,6 +6291,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			if (state === "restart") return {
 				label: t("stateRestart"),
 				dot: "warning"
+			};
+			if (state === "incompatible") return {
+				label: t("stateIncompatible"),
+				dot: "error"
 			};
 			if (state === "inert") return {
 				label: t("stateInert"),
