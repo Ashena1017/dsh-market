@@ -8920,7 +8920,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							setDoneUrls((urls) => urls.filter((url) => url !== plugin.url));
 							setHotUrls((urls) => urls.includes(plugin.url) ? urls : urls.concat(plugin.url));
 							setHotNames((names) => names.includes(plugin.name) ? names : names.concat(plugin.name));
-						} else setDoneUrls((urls) => urls.includes(plugin.url) ? urls : urls.concat(plugin.url));
+						} else if (body.activation?.[plugin.name]?.state !== "incompatible") setDoneUrls((urls) => urls.includes(plugin.url) ? urls : urls.concat(plugin.url));
 						if (body.compatibility?.code === "soft-incompatible") setCompatibilityNotice(body.compatibility);
 						setRecords((list) => patch(list, recordId, body.heldRelease !== void 0 ? {
 							state: "warned",

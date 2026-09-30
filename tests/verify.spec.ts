@@ -141,6 +141,32 @@ describe('verifyActivation (P0-2)', () => {
     expect(result.reasons.join(' ')).toMatch(/0\.2\.0/)
   })
 
+  it('fires on the prerelease host line the users actually run (#757)', () => {
+    // The case that hid the original defect: `^0.1.x` was compared against the
+    // bare `0.2.0` ceiling, so a PRERELEASE of 0.2 slipped under every 0.1-only
+    // range while the release itself did not. Every published 0.2 host is a
+    // prerelease (`0.2.0-rc.1` is what the reporter ran), so a suite that only
+    // exercises `0.2.0` proves the gate works on the one version nobody has.
+    // Pinned here so a comparator regression cannot come back quietly.
+    profile(['dsh-capped'])
+    pkg('dsh-capped', {
+      version: '0.5.1',
+      peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    for (const runtimeVersion of ['0.2.0-rc.1', '0.2.0-rc.2']) {
+      const result = verifyActivation('web', 'dsh-capped', new Set(), undefined, false,
+        { runtimeVersion, exemptions: {} })
+      expect(result, runtimeVersion).toMatchObject({ state: 'incompatible', hot: false, bundle: true })
+    }
+    // The sibling line that DOES satisfy the range keeps the old answer, so
+    // this is not a blanket "any 0.1 peer is incompatible".
+    const satisfied = verifyActivation('web', 'dsh-capped', new Set(), undefined, false,
+      { runtimeVersion: '0.1.7-rc.2', exemptions: {} })
+    expect(satisfied.state).toBe('restart')
+  })
+
   it('an exempted runtime version boots after all — restart, not incompatible (#757)', () => {
     profile(['dsh-capped'])
     pkg('dsh-capped', {
