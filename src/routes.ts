@@ -326,6 +326,23 @@ export function mountMarketRoutes(
   const analyzeActiveProfile = () => analyzeProfile(activeProfileDir, {
     ...(config.dshInstallDir === undefined ? {} : { dshInstallDir: config.dshInstallDir }),
   })
+  /**
+   * The running installation's own anchor, in the shape `trialValidate` wants.
+   *
+   * The host hands the market this anchor (`profileContext.installAnchor`) and
+   * the diagnostics panel has always analysed with it, while every trial
+   * validation fell back to `findDshInstallDir()`'s filesystem probe. The two
+   * were therefore judging the SAME composition from DIFFERENT inputs, and
+   * disagreeing about it: the panel reported a plugin as fine while the update
+   * route answered 422 for the identical bundle order (#781 review). On a host
+   * whose own detection fails, the probe also resolves the official bundles out
+   * of whatever profile tree it can reach, which is how an install/update gets
+   * rolled back over a layer the running host never loaded.
+   *
+   * `undefined` keeps the old fallback behaviour, so this only ever adds
+   * information.
+   */
+  const hostAnchorOption = config.dshInstallDir === undefined ? {} : { dshInstallDir: config.dshInstallDir }
   const persistentLogFile = join(activeProfileDir, '.dsh-market', 'log.ndjson')
   const discoveryManifests = new DiscoveryManifestIndex(
     join(activeProfileDir, '.dsh-market', 'discovery-compatibility-v1.json'),
@@ -2374,7 +2391,7 @@ export function mountMarketRoutes(
                   return
                 }
               }
-              const trial = trialValidate(activeProfileDir, order)
+              const trial = trialValidate(activeProfileDir, order, hostAnchorOption)
               if (!trial.ok) {
                 const first = trial.errors[0]
                 logEvent('warn', 'bundle-order', `rejected by trial validation: ${first?.message ?? 'unknown'}`)
@@ -2455,7 +2472,7 @@ export function mountMarketRoutes(
           // a concurrent pnpm run or another direct write must not interleave
           // (issue #98 analysis: write-route mutual exclusion).
           if (body.action === 'preview') {
-            const previewed = previewPreset(activeProfileDir, name)
+            const previewed = previewPreset(activeProfileDir, name, config.dshInstallDir)
             sendJson(response, previewed.ok ? 200 : 422, previewed)
             return
           }
@@ -2468,7 +2485,7 @@ export function mountMarketRoutes(
               }
               case 'apply': {
                 pendingRollbacks.clear()
-                const applied = applyPreset(activeProfileDir, name, maxSnapshots)
+                const applied = applyPreset(activeProfileDir, name, maxSnapshots, config.dshInstallDir)
                 if (applied.ok) {
                   invalidateUpdates()
                   refreshMarketState()
@@ -3582,7 +3599,7 @@ sendJson(response, 200, { updates })
             }
 
             const stack = readBundleStack(activeProfileDir)
-            const trial = trialValidate(activeProfileDir, stack.community)
+            const trial = trialValidate(activeProfileDir, stack.community, hostAnchorOption)
             if (!trial.ok) {
               await failWithRollback(`迁移后的 profile 无法通过启动校验（${trial.errors[0]?.message ?? 'unknown'}）。 / The migrated profile failed boot validation (${trial.errors[0]?.message ?? 'unknown'}).`)
               return
@@ -4427,7 +4444,7 @@ sendJson(response, 200, { updates })
             let trialError: string | null = null
             if (ok) {
               const stack = readBundleStack(activeProfileDir)
-              const trial = trialValidate(activeProfileDir, stack.community)
+              const trial = trialValidate(activeProfileDir, stack.community, hostAnchorOption)
               if (!trial.ok) {
                 ok = false
                 // Name the LAYER, not only the message: the first error is

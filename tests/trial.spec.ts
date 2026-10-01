@@ -355,3 +355,54 @@ describe('trialValidate (#98 trial boot)', () => {
     expect(result.diff.duplicates).toEqual([])
   })
 })
+
+describe('the host anchor is what trial validation judges with (#781 review)', () => {
+  /**
+   * The disagreement this pins: `analyzeProfile` (the diagnostics panel) is
+   * handed the running installation's anchor by the host, while every
+   * `trialValidate` call site re-derived one with `findDshInstallDir()`. Two
+   * answers about one composition therefore came from two different inputs.
+   *
+   * #369 deliberately tolerates an in-box bundle it cannot locate, so the
+   * observable difference is not ok/not-ok — it is whether the installation's
+   * own patch rows are in the composition at all. With the anchor they are;
+   * without it the bundle contributes nothing, which is the state every call
+   * site was in, and on a host whose own probe fails the fallback can instead
+   * resolve an official bundle out of a profile tree belonging to a DIFFERENT
+   * dsh installation (#781).
+   */
+  const anchor = (): string => {
+    const dir = join(tmp, 'host')
+    // The install root the host would name: a package.json to anchor on, with
+    // the in-box bundle beside it — NOT in the profile, so the only way this
+    // layer can reach the composition is through the anchor.
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.0-rc.2' }))
+    writeBundle(dir, '@deepseek-ai/dsh-web-app', '0.2.0-rc.2', [
+      { insert: [{ id: 'desktop-shell', name: 'cordis-plugin-desktop-shell' }] },
+    ])
+    return dir
+  }
+
+  it('composes the installation\'s own layer when the anchor is passed', () => {
+    const profile = pdir()
+    writeProfile(profile, ['@deepseek-ai/dsh-web-app', 'dsh-loop'])
+    writeBundle(profile, 'dsh-loop', '1.0.0', [{ insert: [{ id: 'loop', name: 'dsh-loop' }] }])
+
+    const withAnchor = trialValidate(profile, ['dsh-loop'], { dshInstallDir: anchor() })
+    expect(withAnchor.rows.map(row => row.id)).toContain('desktop-shell')
+  })
+
+  it('contributes nothing from that bundle when the anchor is missing', () => {
+    // The same profile and the same in-box bundle; only the input differs.
+    const profile = pdir('no-anchor')
+    writeProfile(profile, ['@deepseek-ai/dsh-web-app', 'dsh-loop'])
+    writeBundle(profile, 'dsh-loop', '1.0.0', [{ insert: [{ id: 'loop', name: 'dsh-loop' }] }])
+
+    const without = trialValidate(profile, ['dsh-loop'], {
+      dshInstallDir: null,
+      homeDir: join(tmp, 'empty-home'),
+    })
+    expect(without.rows.map(row => row.id)).not.toContain('desktop-shell')
+  })
+})
