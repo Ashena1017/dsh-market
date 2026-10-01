@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path'
 import type { InstallResult } from '../src/dsh-cli.ts'
 import {
   diagnosticsTail, failureDetail, FETCH_TIMEOUT_OVERRIDE, groupConflictsByOwner, hostNodeModulesRoot, isStaleUpdate, normalizedLinkTarget,
-  parseIgnoredBuilds, parsePrepareNotAllowed, pnpmNeverStarted, removeDanglingHostBridge, retargetCollections,
+  parseIgnoredBuildEntries, parseIgnoredBuilds, parsePrepareNotAllowed, pnpmNeverStarted, removeDanglingHostBridge, retargetCollections,
   RELEASE_AGE_OVERRIDE, validateAddedPlugins, withHoistRecovery,
 } from '../src/install.ts'
 import { dropUnparseableBuildKeys, profileDir } from '../src/profile.ts'
@@ -679,6 +679,43 @@ describe('parseIgnoredBuilds (#6)', () => {
   it('strips git/codeload source suffixes the same way as versions (#69)', () => {
     expect(parseIgnoredBuilds('', 'Ignored build scripts: dsh-github-intelligence@https://codeload.github.com/z/r/tar.gz/abc.'))
       .toEqual(['dsh-github-intelligence'])
+  })
+})
+
+describe('parseIgnoredBuildEntries', () => {
+  it('keeps the dep path pnpm named alongside the bare name it is matched by', () => {
+    // pnpm writes THIS string into allowBuilds when it auto-creates the entry,
+    // and matches an existing one verbatim. `parseIgnoredBuilds` collapses it
+    // to `dsh-codearts-auth`, which no pnpm 11.x reads for a git dependency.
+    const dep = 'dsh-codearts-auth@git+https://gitee.com/iJetLi/deepseek-harness-codearts.git#f9a297ac86962d75ca99d08e279b57b2b66a7b59'
+    expect(parseIgnoredBuildEntries('', `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: ${dep}\n`))
+      .toEqual([{ name: 'dsh-codearts-auth', key: dep }])
+  })
+
+  it('leaves a registry dependency keyed by its bare name, as pnpm does', () => {
+    // pnpm's allowBuildKeyFromIgnoredBuild collapses a semver dep path to the
+    // bare name, which is exactly the entry that authorizes it. Only a source
+    // (git, archive, tarball) keeps its full dep path.
+    expect(parseIgnoredBuildEntries('', 'Ignored build scripts: esbuild@0.25.0, koffi.'))
+      .toEqual([{ name: 'esbuild', key: 'esbuild' }, { name: 'koffi', key: 'koffi' }])
+    expect(parseIgnoredBuildEntries('', 'Ignored build scripts: @scope/pkg@1.0.0.'))
+      .toEqual([{ name: '@scope/pkg', key: '@scope/pkg' }])
+  })
+
+  it('keeps a codeload archive dep path whole, not the bare name', () => {
+    const dep = 'dsh-github-intelligence@https://codeload.github.com/z/r/tar.gz/abc123'
+    expect(parseIgnoredBuildEntries('', `Ignored build scripts: ${dep}.`))
+      .toEqual([{ name: 'dsh-github-intelligence', key: dep }])
+  })
+
+  it('stops at the JSON around the sentence when it arrives inside ndjson', () => {
+    // --reporter=ndjson puts the whole sentence in a JSON string on stdout, so
+    // the capture runs on into `","code":"ERR_PNPM_IGNORED_BUILDS"…` unless the
+    // walk stops at the quote. Verified against real pnpm 11.7.0 output.
+    const dep = 'dsh-probe@git+file:///tmp/probe.git#fd58e36338d83115cf3c0b5d52916cdb705d5632'
+    const line = `{"time":1,"level":"error","name":"pnpm","code":"ERR_PNPM_IGNORED_BUILDS",`
+      + `"err":{"message":"Ignored build scripts: ${dep}","code":"ERR_PNPM_IGNORED_BUILDS"}}`
+    expect(parseIgnoredBuildEntries(line, '')).toEqual([{ name: 'dsh-probe', key: dep }])
   })
 })
 

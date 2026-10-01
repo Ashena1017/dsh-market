@@ -39,7 +39,7 @@ import { applyPreset, deletePreset, listPresets, previewPreset, savePreset } fro
 import { createProfileSnapshot, DEFAULT_MAX_SNAPSHOTS, deleteSnapshot, listSnapshots, restoreSnapshot } from './snapshot.ts'
 import { trialValidate } from './trial.ts'
 import { catalogRepoKey, codeloadAllowBuildsKey, findCatalogEntryForLocal, findInstalledAlias, gitCommitOfTarget, githubCommitOfTarget, githubTargetAtCommit, gitAllowBuildsKey, gitRefOfTarget, gitTargetAtCommit, gitUpdateTarget, hostedRepoKey, lookupRepoFromUrl, pinnedGitAllowBuildsKey, installTargetFor, isGenerationLink, isLocalSpec, NPM_NAME_RE, repoOfTarget, restoreBlockedByWorkspace, restoreTargetForLocal, workspaceProtocolDeps } from './sources.ts'
-import { failureDetail, groupConflictsByOwner, isStaleUpdate, parseIgnoredBuilds, parsePrepareKey, parsePrepareNotAllowed, pnpmBlockedByOpenFiles, pnpmNeverStarted, RELEASE_AGE_OVERRIDE, removeDanglingHostBridge, retargetCollections, validateAddedPlugins, withHoistRecovery } from './install.ts'
+import { failureDetail, groupConflictsByOwner, isStaleUpdate, parseIgnoredBuildEntries, parseIgnoredBuilds, parsePrepareKey, parsePrepareNotAllowed, pnpmBlockedByOpenFiles, pnpmNeverStarted, RELEASE_AGE_OVERRIDE, removeDanglingHostBridge, retargetCollections, validateAddedPlugins, withHoistRecovery } from './install.ts'
 import { classifyPnpmFailure } from './pnpm-compat.ts'
 import { asChannel, CHANNELS, DIST_TAG, resolveChannel, type Channel } from './channels.ts'
 import {
@@ -281,15 +281,37 @@ function declaresBundle(profileDirectory: string, name: string): boolean {
   }
 }
 
-const prepareRefusals = new Map<string, string | null>()
+/**
+ * The allowBuilds key pnpm itself printed when it refused a build, per package
+ * name — from a prepare refusal that named one, or from an ignored-builds line
+ * that named the dep path.
+ *
+ * This is the most authoritative answer to "which key will pnpm read": it
+ * names the commit the PENDING install is actually fetching, which no spec
+ * derived from the profile can answer during an update.
+ */
+const printedBuildKeys = new Map<string, string | null>()
 
 function blockedBuilds(result: { ignoredBuilds?: unknown; stdout: string; stderr: string }): string[] | undefined {
+  // Record pnpm's own dep path for every ignored build BEFORE deciding what to
+  // report. Both returns below hand back BARE names, so a git plugin whose
+  // build pnpm skipped would otherwise leave the approve-and-retry button with
+  // nothing but the INSTALLED spec to derive a key from. During an update that
+  // spec still carries the OLD pin, so the button re-wrote an entry the profile
+  // already held while pnpm went on naming the new commit, and the banner came
+  // back byte-identical.
+  //
+  // Only entries that name a source are worth recording: a registry dep's dep
+  // path IS its bare name, which the bare entry already authorizes.
+  for (const entry of parseIgnoredBuildEntries(result.stdout, result.stderr)) {
+    if (entry.key !== entry.name) printedBuildKeys.set(entry.name, entry.key)
+  }
   if (Array.isArray(result.ignoredBuilds) && result.ignoredBuilds.length > 0) return result.ignoredBuilds as string[]
   const list = parseIgnoredBuilds(result.stdout, result.stderr)
   if (list.length > 0) return list
   const pending = parsePrepareNotAllowed(result.stdout, result.stderr)
   if (pending === null) return undefined
-  prepareRefusals.set(pending, parsePrepareKey(result.stdout, result.stderr))
+  printedBuildKeys.set(pending, parsePrepareKey(result.stdout, result.stderr))
   return [pending]
 }
 
@@ -5081,17 +5103,19 @@ sendJson(response, 200, { updates })
             return pinnedKey === null ? [stable] : [stable, pinnedKey]
           }
           /**
-           * The allowBuilds key pnpm itself printed when it refused to prepare
-           * this package, as an array (empty when it printed none).
+           * The allowBuilds key pnpm itself printed when it refused this
+           * package's build, as an array (empty when it printed none).
            *
            * This is the most authoritative answer to "which key will pnpm
            * read": it names the commit the PENDING install actually fetches.
            * The installed spec cannot answer that for an update — it still
            * carries the OLD pin, so `buildKeys` derives a key the profile
-           * already holds, and the retry fails byte-identically.
+           * already holds, and the retry fails byte-identically. Recorded for
+           * an ignored build as well as a prepare refusal: both are pnpm
+           * naming the dep path it wants allowlisted.
            */
           const printedKeysFor = (name: string): string[] => {
-            const printed = prepareRefusals.get(name)
+            const printed = printedBuildKeys.get(name)
             return printed === null || printed === undefined ? [] : [printed]
           }
           for (const name of requested) {
@@ -5133,7 +5157,7 @@ sendJson(response, 200, { updates })
             // must add to them, never replace them. The bare name authorizes
             // it on pnpm 10.26+ and 11.0–11.5; the key pnpm printed, when it
             // printed one, is what the others match.
-            const refused = prepareRefusals.has(name)
+            const refused = printedBuildKeys.has(name)
             const printedKeys = printedKeysFor(name)
             if (keys.length > 0 || refused) {
               packages.push(name, ...keys, ...printedKeys)
