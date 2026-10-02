@@ -7069,6 +7069,39 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			});
 		}
 		/**
+		* Native window controls can own the top band even though DOM hit-testing
+		* still reports the page element underneath. The official Windows desktop
+		* shell has been observed with a 42px band while the lightbox close button
+		* starts at 16px (#384), leaving only its bottom edge clickable.
+		*
+		* Read the shell's geometry instead of hard-coding a desktop height: titlebar
+		* overlays differ between shells, and ordinary browsers have no such API.
+		*/
+		function useWindowTitlebarHeight() {
+			const [height, setHeight] = (0, react.useState)(0);
+			(0, react.useLayoutEffect)(() => {
+				if (typeof navigator === "undefined") return;
+				const overlay = navigator.windowControlsOverlay;
+				if (overlay?.getTitlebarAreaRect === void 0) return;
+				const sync = () => {
+					try {
+						if (overlay.visible === false) {
+							setHeight(0);
+							return;
+						}
+						const next = overlay.getTitlebarAreaRect().height;
+						setHeight(Number.isFinite(next) && next > 0 ? next : 0);
+					} catch {
+						setHeight(0);
+					}
+				};
+				sync();
+				overlay.addEventListener?.("geometrychange", sync);
+				return () => overlay.removeEventListener?.("geometrychange", sync);
+			}, []);
+			return height;
+		}
+		/**
 		* Full-bleed image preview, opened from a card thumbnail or a dialog's
 		* screenshot strip. Not the shared Modal primitive: Modal is chrome for a
 		* decision (title, description, footer actions); this is just the same
@@ -7077,6 +7110,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 		*/
 		function ScreenshotLightbox({ shots, startIndex, onClose, t }) {
 			const [index, setIndex] = useAutoCarousel(shots.length, startIndex, 0);
+			const titlebarHeight = useWindowTitlebarHeight();
 			const host = useMarketPortalHost();
 			(0, react.useEffect)(() => {
 				const onKey = (e) => {
@@ -7100,6 +7134,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				children: [
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 						className: Market_module_css_default.lightboxClose,
+						style: titlebarHeight > 0 ? { top: titlebarHeight + 16 } : void 0,
 						"aria-label": t("lightboxClose"),
 						onClick: onClose,
 						children: "×"

@@ -6185,6 +6185,37 @@ describe('card thumbnail + lightbox (curated screenshots only)', () => {
     return registry
   }
 
+  function stubWindowControlsOverlay(initialHeight: number) {
+    let height = initialHeight
+    let visible = true
+    const listeners = new Set<EventListener>()
+    const emit = () => { for (const listener of [...listeners]) listener(new Event('geometrychange')) }
+    const overlay = {
+      get visible() { return visible },
+      getTitlebarAreaRect: vi.fn(() => ({ height })),
+      addEventListener: vi.fn((type: string, listener: EventListener) => {
+        if (type === 'geometrychange') listeners.add(listener)
+      }),
+      removeEventListener: vi.fn((type: string, listener: EventListener) => {
+        if (type === 'geometrychange') listeners.delete(listener)
+      }),
+    }
+    const mockedNavigator = Object.create(navigator) as Navigator & { windowControlsOverlay: typeof overlay }
+    Object.defineProperty(mockedNavigator, 'windowControlsOverlay', { configurable: true, value: overlay })
+    vi.stubGlobal('navigator', mockedNavigator)
+    return {
+      overlay,
+      setHeight(next: number) {
+        height = next
+        emit()
+      },
+      setVisible(next: boolean) {
+        visible = next
+        emit()
+      },
+    }
+  }
+
   it('labels the rolling download count and exposes source dates on cards and install details', async () => {
     const registry = registryWithShots()
     Object.assign(registry.plugins[0], {
@@ -6278,6 +6309,55 @@ describe('card thumbnail + lightbox (curated screenshots only)', () => {
       fireEvent.click(document.querySelector('[class*="lightboxClose"]')!)
       await waitFor(() => expect(document.querySelector('[class*="lightboxImg"]')).toBeNull())
     }
+  })
+
+  it('leaves the close button on its normal CSS inset when there is no native titlebar overlay', async () => {
+    stubFetch({ '/dsh-market/registry': { source: 'live', registry: registryWithShots() } })
+    const { container } = render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+
+    fireEvent.click(container.querySelector('img[class*="cardShot"]')!)
+    const close = await waitFor(() => {
+      const found = document.querySelector('[class*="lightboxClose"]') as HTMLButtonElement | null
+      expect(found).toBeTruthy()
+      return found!
+    })
+    // No inline override means the stylesheet's 16px inset remains the one
+    // source of truth in an ordinary browser.
+    expect(close.style.top).toBe('')
+  })
+
+  it('keeps the close button below the native titlebar and follows geometry changes (#384)', async () => {
+    const controls = stubWindowControlsOverlay(42)
+    stubFetch({ '/dsh-market/registry': { source: 'live', registry: registryWithShots() } })
+    const { container } = render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+
+    fireEvent.click(container.querySelector('img[class*="cardShot"]')!)
+    const close = await waitFor(() => {
+      const found = document.querySelector('[class*="lightboxClose"]') as HTMLButtonElement | null
+      expect(found).toBeTruthy()
+      return found!
+    })
+    // Real official-shell report: 42px native band + the existing 16px visual
+    // inset. The whole 36px control now starts below the band, not inside it.
+    expect(close.style.top).toBe('58px')
+
+    act(() => controls.setHeight(36))
+    await waitFor(() => expect(close.style.top).toBe('52px'))
+
+    // A shell can turn the overlay off. Its previous geometry must not leave
+    // a stale desktop offset behind when the native overlay is no longer visible.
+    act(() => controls.setVisible(false))
+    await waitFor(() => expect(close.style.top).toBe(''))
+
+    // Visible again but with no reserved band is the same browser fallback.
+    act(() => { controls.setVisible(true); controls.setHeight(0) })
+    await waitFor(() => expect(close.style.top).toBe(''))
+
+    fireEvent.click(close)
+    await waitFor(() => expect(document.querySelector('[class*="lightboxImg"]')).toBeNull())
+    expect(controls.overlay.removeEventListener).toHaveBeenCalledWith('geometrychange', expect.any(Function))
   })
 
   it('opens a lightbox on click, at the clicked shot, and wraps prev/next around the ends', async () => {
