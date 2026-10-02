@@ -695,21 +695,65 @@ export function parsePrepareKey(stdout: string, stderr: string): string | null {
 }
 
 /**
+ * The allowBuilds key pnpm derives for one ignored build — its own
+ * `allowBuildKeyFromIgnoredBuild`, transcribed.
+ *
+ * pnpm keeps the whole dep path when what follows the name's `@` is not a
+ * semver version (a git remote, a codeload archive, a tarball URL — all of them
+ * contain `:`, `/` or `#`), and collapses to the bare name otherwise. It writes
+ * the result into `allowBuilds` and matches an existing entry against it
+ * verbatim, so the market has to agree with it exactly: a bare name authorizes
+ * a registry dependency and nothing else, while a git dependency is authorized
+ * only by its full `name@git+…#<sha>` dep path.
+ */
+export function allowBuildKeyFromIgnoredBuild(depPath: string): string {
+  const at = depPath.lastIndexOf('@')
+  if (at <= 0) return depPath
+  const version = depPath.slice(at + 1)
+  return version !== '' && /[:/#]/.test(version) ? depPath : depPath.slice(0, at)
+}
+
+/**
+ * The packages pnpm reported as having their build scripts ignored, each with
+ * the allowBuilds key pnpm itself keys that decision by.
+ *
+ * pnpm prints the dependency's full dep path — `name@git+https://…#<sha>` for
+ * a git source, `name@1.2.3` for a registry one — and `parseIgnoredBuilds`
+ * below has always collapsed both to the bare name. That is right for a
+ * registry dependency and drops the only key a git dependency is authorized
+ * by, which is what left approve-and-retry unable to make progress on one.
+ *
+ * `name` is what the approve-builds route matches its request against; `key`
+ * is the entry to write. They are equal for a registry dependency.
+ *
+ * Entries may also arrive inside pnpm's ndjson error line, where the sentence
+ * is followed by `","code":…`; the walk stops at the first character no dep
+ * path can contain, so the surrounding JSON is not swallowed.
+ */
+export function parseIgnoredBuildEntries(stdout: string, stderr: string): Array<{ name: string; key: string }> {
+  const m = /Ignored build scripts:?\s*([^\n]+)/i.exec(`${stdout}\n${stderr}`)
+  if (m === null) return []
+  const found: Array<{ name: string; key: string }> = []
+  for (const chunk of m[1].split(',')) {
+    // A dep path ends at whitespace, a JSON quote (plain or escaped) or the
+    // closing brace of the ndjson error object; the human line adds a period.
+    const walked = /^[^\s"\\}]*/.exec(chunk.trim())
+    const entry = (walked === null ? '' : walked[0]).replace(/\.$/, '')
+    if (entry === '') continue
+    const at = entry.lastIndexOf('@')
+    const name = at > 0 ? entry.slice(0, at) : entry
+    if (name !== '' && !found.some(seen => seen.name === name)) {
+      found.push({ name, key: allowBuildKeyFromIgnoredBuild(entry) })
+    }
+  }
+  return found
+}
+
+/**
  * Package names pnpm reported as having their build scripts ignored
  * ("Ignored build scripts: esbuild, koffi."). Empty when none.
  * (#6 by @qichuang321.)
  */
 export function parseIgnoredBuilds(stdout: string, stderr: string): string[] {
-  const m = /Ignored build scripts:?\s*([^\n]+)/i.exec(`${stdout}\n${stderr}`)
-  if (m === null) return []
-  const found: string[] = []
-  for (const chunk of m[1].split(',')) {
-    // Entries may carry a version suffix and the sentence's final period.
-    const trimmed = chunk.trim().replace(/\.$/, '')
-    if (trimmed === '') continue
-    const at = trimmed.lastIndexOf('@')
-    const name = at > 0 ? trimmed.slice(0, at) : trimmed
-    if (name !== '' && !found.includes(name)) found.push(name)
-  }
-  return found
+  return parseIgnoredBuildEntries(stdout, stderr).map(entry => entry.name)
 }

@@ -5277,6 +5277,54 @@ describe('build-script approval flow (#6)', () => {
     expect(yaml).toContain(`${printed}: true`)
   })
 
+  it('approves an update whose build pnpm IGNORED with the dep path it named, not the installed pin', async () => {
+    // The other half of the same loop. A git plugin update can fail at either
+    // of pnpm's two build gates: the FETCHER (ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED,
+    // #68) or the LINKER (ERR_PNPM_IGNORED_BUILDS). The test above covers the
+    // first. On the second the previous build IS in node_modules, so the route
+    // takes its `installed.includes(name)` branch — and `blockedBuilds` used to
+    // return the bare names from this line without recording what pnpm printed,
+    // leaving `printedKeysFor` empty. The button then derived a key from the
+    // INSTALLED spec, which during an update still carries the OLD pin: it wrote
+    // an entry the profile already held and pnpm failed identically again.
+    // Reported as the banner that returns no matter how many times it is clicked.
+    const OLD = 'a'.repeat(40)
+    const NEW = 'b'.repeat(40)
+    const remote = 'https://gitee.com/iJetLi/deepseek-harness-codearts.git'
+    const ignored = `dsh-codearts-auth@git+${remote}#${NEW}`
+    fake.repos[`git+${remote}`] = {
+      name: 'dsh-codearts-auth',
+      manifest: { name: 'dsh-codearts-auth', version: '0.1.0', dsh: {}, main: 'lib/index.js' },
+      artifacts: ['lib/index.js'],
+      lockCommit: NEW,
+    }
+    const manifestPath = join(fake.profileDir, 'package.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.dependencies = { ...(manifest.dependencies ?? {}), 'dsh-codearts-auth': `git+${remote}#${OLD}` }
+    writeFileSync(manifestPath, JSON.stringify(manifest))
+    const pkgDir = join(fake.profileDir, 'node_modules', 'dsh-codearts-auth')
+    mkdirSync(join(pkgDir, 'lib'), { recursive: true })
+    writeFileSync(join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'dsh-codearts-auth', version: '0.1.0', dsh: {}, main: 'lib/index.js' }))
+    writeFileSync(join(pkgDir, 'lib', 'index.js'), '')
+    // pnpm 11.7.0's own words for a git dep whose build it skipped — the FULL
+    // dep path, exactly as it appears in a real `.plugin-manager` log.
+    fake.failNextAddStderrOnce = '[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: '
+      + `${ignored}\n\nRun "pnpm approve-builds" to pick which dependencies should be allowed to run scripts.\n`
+
+    const update = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-codearts-auth' })
+    expect(update.status).toBe(502)
+    expect(update.json.ignoredBuilds).toEqual(['dsh-codearts-auth'])
+
+    const approve = await bed.dispatch('POST', '/dsh-market/approve-builds', { packages: ['dsh-codearts-auth'] })
+    expect(approve.status).toBe(200)
+    const yaml = readFileSync(join(fake.profileDir, 'pnpm-workspace.yaml'), 'utf8')
+    // The regression pin. Reverting src/routes.ts leaves only the keys derived
+    // from the installed spec — the OLD pin, the stable clone URL and the bare
+    // name — and pnpm 11.x authorizes a git build by none of them.
+    expect(yaml).toContain(`${ignored}: true`)
+  })
+
   it('still refuses a name pnpm never refused, so the approval is not free input', async () => {
     const approve = await bed.dispatch('POST', '/dsh-market/approve-builds', { packages: ['@evil/anything'] })
     expect(approve.status).toBe(400)
